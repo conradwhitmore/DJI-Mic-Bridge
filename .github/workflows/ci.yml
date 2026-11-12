@@ -1,0 +1,33 @@
+name: macOS checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          swift --version
+          python3 --version
+      - name: Transport boundary
+        run: python3 scripts/check-micbridge-transport.py
+      - name: Public source privacy
+        run: |
+          python3 scripts/check-public-privacy.py
+          python3 -m unittest discover -s scripts/tests -p 'test_public_privacy.py' -v
+      - name: Swift tests
+        run: swift test
+      - name: Python offline tests
+        run: python3 -m unittest discover -s scripts/diagnostics/tests -v
+      - name: Compile both apps without signing or hardware access
+        run: |
+          swift build -c release --product MicBridge
+          swift build -c release --product RXlessDemo

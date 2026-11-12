@@ -1,0 +1,10 @@
+name: Feature request / 功能建议
+description: Describe a concrete use case.
+body:
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case / 使用场景
+      description: What are you trying to accomplish? For a device request, include model and firmware without serial numbers.
+    validations:
+      required: true

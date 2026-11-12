@@ -1,0 +1,29 @@
+MicBridge Audio — modified BlackHole driver, 2026-11-10
+
+Upstream: https://github.com/ExistentialAudio/BlackHole
+Tag: v0.7.1
+Commit: e2b22aaaba4e507a097131704bf96dabc004d9cf
+License: GPL-3.0; see LICENSE. Original copyright notices are preserved.
+
+Modifications:
+- BlackHole/BlackHole.c includes MicBridgeAudioConfig.h and returns the literal
+  display name without a channel-count format placeholder.
+- The Audio Device transport property reports USB instead of Virtual, following
+  the compatibility approach documented by HD838A/remote-mic-app (SayAll).
+  This is still a software loopback; it does not use USB hardware.
+- Name: MicBridge Audio. UID: MicBridgeAudio2ch_UID. Manufacturer: MicBridge.
+- Bundle: org.dji-mic-rxless.MicBridgeAudio. Two channels; default system alerts
+  selection disabled. Audio processing remains the upstream implementation.
+- BlackHole.plist uses an independent CFPlugIn factory UUID.
+
+Build from the source bundle on a Mac with Xcode:
+  bash scripts/build-micbridge-audio-driver.sh
+The script defaults to local ad-hoc signing for standalone source rebuilds.
+For the combined development package, configure your own code-signing identity
+as described in docs/BUILDING.md. Public distribution requires appropriate
+Developer ID signing/notarization.
+
+The source archive distributed beside and inside the installer contains this
+complete modified source tree and its build script. No network download is
+required to rebuild the driver. BlackHole's original installer scripts are
+retained as upstream source only; MicBridge uses its own separate installer.

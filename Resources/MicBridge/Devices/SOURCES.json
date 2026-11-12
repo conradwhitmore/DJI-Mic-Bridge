@@ -1,0 +1,26 @@
+{
+  "mic2.png": {
+    "page": "https://store.dji.com/product/dji-mic-2-tx-black",
+    "url": "https://se-cdn.djiits.com/tpc/uploads/spu/cover/5ac1ed73f9d118c711ae83631331f53a@ultra.png",
+    "sha256": "beca3b75d7b8284a125b85ecfa0d0f9f1ff2c281e3a8b787eab25df4ec5eb2e5",
+    "note": "Unmodified official product render; rights belong to DJI. Downloaded 2026-11-10."
+  },
+  "mini.png": {
+    "page": "https://store.dji.com/product/dji-mic-mini-tx-black",
+    "url": "https://se-cdn.djiits.com/tpc/uploads/spu/cover/a462922ebb6266325f5dc0e688c7f418@ultra.png",
+    "sha256": "7d53aa87cc320a9cbb5a9e02aad84644cb3f1a18135a441a931198e0c5d58935",
+    "note": "Unmodified official product render; DJI copyright. 2026-11-10."
+  },
+  "mini2.png": {
+    "page": "https://store.dji.com/ca/product/dji-mic-mini-2-transmitter",
+    "url": "https://se-cdn.djiits.com/tpc/uploads/spu/cover/222b5c703d0f770d8eccf8cd76c42734@ultra.png",
+    "sha256": "db6010de38027a683cb67341b06eeb305430ab8e2dff7e80c5598c6d81f7b7dd",
+    "note": "Unmodified official product render; DJI copyright. 2026-11-10."
+  },
+  "mic3.png": {
+    "page": "https://store.dji.com/product/dji-mic-3-transmitter",
+    "url": "https://se-cdn.djiits.com/tpc/uploads/spu/cover/5ac37a6cf8ca7e9e01c18dd9fc096fe8@ultra.png",
+    "sha256": "669ed161bc0e79dca0ee9a627316f820247cdb7f287f46fcc1b10a65dba1ab96",
+    "note": "Unmodified official product render; DJI copyright. 2026-11-10."
+  }
+}

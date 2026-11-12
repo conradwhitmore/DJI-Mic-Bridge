@@ -1,0 +1,22 @@
+name: Bug report / 问题反馈
+description: Report a reproducible MicBridge issue.
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / 环境
+      description: App version, macOS version/chip, transmitter model and firmware, receiving application.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps and result / 复现与结果
+      description: Include expected vs actual behavior and whether audio, button events and battery were working.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence / 脱敏证据
+      description: Only minimal logs or screenshots. Remove addresses, personal paths and identifiers. Do not attach raw speech, firmware, credentials or pairing data.

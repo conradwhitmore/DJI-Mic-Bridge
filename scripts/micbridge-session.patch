@@ -1,0 +1,180 @@
+--- a/MicSession.swift
++++ b/MicSession.swift
+@@ -12,13 +12,18 @@
+     var recordingComplete: ((URL?, String) -> Void)?
+     var unexpectedStop: (() -> Void)?
+     var audioSamples: (([Float]) -> Void)?
++    var keyTestEvent: ((MicKeyTestEvent) -> Void)?
++    private(set) var keyTestMayBeActive = false
++    private var lastKeyTestSequence: UInt16?
+     var buttonEvent: ((MicButtonEvent) -> Void)?
+     var controlUpdate: ((String) -> Void)?
+     var queryCompleted: ((MicControlCommand, Result<[UInt8], Error>) -> Void)?
+-    var keyTestEvent: ((MicKeyTestEvent) -> Void)?
+-    private(set) var keyTestMayBeActive = false
+-    private var lastKeyTestSequence: UInt16?
+-    var canRecoverKeyTest: Bool { canRecord && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
++    var controlResult: ((MicControlCommand, Bool) -> Void)?
++    var batteryUpdate: ((Int) -> Void)?
++    private(set) var controlFramesReceived = 0, statusFramesReceived = 0
++    private var nextControlDiagnostic: TimeInterval = 0
++    private var controlKinds: Set<String> = []
++    private var exitAcknowledged = false
+     var beforeReconnectDeletion: (() throws -> Void)?
+     private var query: MicControlQuery?, queryDeadline: TimeInterval?
+     private var queryChannel: IOBluetoothRFCOMMChannel?
+@@ -28,8 +33,10 @@
+     private var statusRouteSeen = false
+     private(set) var reconnectDeleteSent = false
+     var canQuery: Bool { canRecord && statusRouteSeen && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
++    var controlIdle: Bool { query == nil && pendingWrite == nil }
++    var canRecoverKeyTest: Bool { canRecord && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
+     private var buttonEvents: [MicButtonEvent] = []
+-    private let parser = FrameParser(), buttons = MicButtonDetector()
++    private let parser = FrameParser(requireContinuousAudio: false), buttons = MicButtonDetector()
+     private let decoder: LC3Decoder
+     private let recorder = RecordingSegments()
+     private var recordingStarted: TimeInterval?
+@@ -112,6 +119,7 @@
+     func start() throws {
+         guard device.isConnected() else { throw StreamError.invalid("请先在 macOS 蓝牙设置连接 Mic 2") }
+         try routes.lock()
++        record("audio_routes_locked", ["description": routes.description])
+         linkHandle = device.connectionHandle
+         created = now
+         update?("准备 SPP · \(routes.description)", 0, 0, 0)
+@@ -190,6 +198,11 @@
+         do { try routes.check(requirePresent: true) } catch { stop(error.localizedDescription); return }
+ #endif
+         if let openedAt {
++            if now >= nextControlDiagnostic {
++                nextControlDiagnostic = now + 10
++                record("control_health", ["audio_frames": frames, "control_frames": controlFramesReceived,
++                                          "status_frames": statusFramesReceived, "route_ready": statusRouteSeen])
++            }
+             if let recordingStarted, now - recordingStarted >= recordingDuration {
+                 stopRecording("定时录音完成")
+             }
+@@ -237,7 +250,7 @@
+             record("control_auto_reconnect_disabled", ["command": command.rawValue, "persisted": true])
+         }
+         let data = NSMutableData(data: Data(bytes))
+-        commandBuffers.append(data) // Retain through late asynchronous callbacks.
++        commandBuffers.append(data) // Retain until the matching asynchronous write completion.
+         pendingWrite = data.mutableBytes
+         if command == .keyTestOn { keyTestMayBeActive = true }
+         if command == .deleteSPPReconnect { reconnectDeleteSent = true }
+@@ -259,6 +272,8 @@
+         if request.command == .keyTestOff, payload != nil { keyTestMayBeActive = false }
+         query = nil; queryDeadline = nil
+         controlUpdate?(message)
++        if request.command == .deleteSPPReconnect, kind == "control_reply" { exitAcknowledged = true }
++        controlResult?(request.command, kind == "control_reply")
+         let result: Result<[UInt8], Error> = payload.map { .success($0) } ?? .failure(StreamError.invalid(message))
+         // Defer follow-up commands until the receive parser has returned.
+         let callback = queryCompleted
+@@ -269,6 +284,9 @@
+             DispatchQueue.main.async { [weak self] in self?.rfcommChannelWriteComplete(channel, refcon: refcon, status: error) }; return
+         }
+         guard !retired, let refcon, refcon == pendingWrite, channel === queryChannel else { return }
++        // Completed writes no longer own their buffers. Otherwise periodic read-only
++        // battery queries would consume the 32-buffer limit and eventually block exit.
++        commandBuffers.removeAll { $0.mutableBytes == refcon }
+         pendingWrite = nil
+         record("control_write_completed", ["status": Int(error)])
+         if error != 0 { finishQuery("指令写入失败：\(error)；SPP 保持连接", kind: "control_write_failed") }
+@@ -325,6 +343,33 @@
+         let callback = complete; complete = nil
+         callback?(self, message, routeFailed)
+     }
++    // BEGIN MICBRIDGE ACK EXIT
++    /// Product completion rule: a validated 12/65 ACK authorizes local teardown.
++    /// Keep the notification-based path below for unrelated transport failures.
++    func closeAfterAcknowledgedExit() {
++        guard exitAcknowledged, !retired, !completed else { return }
++        stopping = true; retired = true
++        openWork?.cancel(); openWork = nil
++        timer?.invalidate(); timer = nil
++        stopRecording("SPP 已断开")
++        record("stop_requested", ["reason": "acknowledged_exit", "completion_basis": "12/65_ack00"])
++        for notice in closeNotifications.values { notice.unregister() }
++        closeNotifications.removeAll()
++        for (id, channel) in channels {
++            _ = channel.setDelegate(nil)
++            record("close_requested", ["object_id": id])
++            let result = channel.close()
++            record("close_returned", ["object_id": id, "status": Int(result)])
++        }
++        channels.removeAll(); queryChannel = nil
++        do { try routes.restoreLockedDefaults() }
++        catch { record("route_restore_failed", ["error": error.localizedDescription]) }
++        completed = true
++        record("connection_finished", ["reason": "acknowledged_exit", "completion_basis": "12/65_ack00", "recovery_required": false])
++        let callback = complete; complete = nil
++        callback?(self, "SPP 已断开", false)
++    }
++    // END MICBRIDGE ACK EXIT
+     func stop(_ reason: String = "已断开") {
+         guard !stopping, !retired else { return }
+         finishQuery("SPP 正在关闭，未完成指令不自动重发", kind: "control_cancelled")
+@@ -355,7 +400,7 @@
+         // callback can still request bounded cleanup. No new capture is allowed.
+         var message = finalReason
+         if unconfirmed { message += "；SPP 关闭未确认，临时路由保护已结束。请关闭 Mic 2 并退出 App，暂勿启用系统录音" }
+-        else if outcome == .confirmed { message += "；本程序的 SPP 通道关闭已确认，普通蓝牙收音仍需单独验证" }
++        else if outcome == .confirmed { message += "；SPP 通道已关闭" }
+         if let routeFailure { message += "；音频收尾检查异常：\(routeFailure)" }
+         record("connection_finished", ["recovery_required": unconfirmed || routeFailure != nil])
+         let callback = complete; complete = nil
+@@ -395,7 +440,13 @@
+         guard !stopping, openedAt != nil else { return }
+         do {
+             var receivedPCM: [Float] = []
+-            for envelope in try parser.feed(bytes) {
++            let previousGaps = parser.audioDiscontinuities
++            let envelopes = try parser.feed(bytes)
++            if parser.audioDiscontinuities != previousGaps,
++               previousGaps < 20 || parser.audioDiscontinuities / 100 != previousGaps / 100 {
++                record("audio_sequence_gap_ignored", ["count": parser.audioDiscontinuities])
++            }
++            for envelope in envelopes {
+                 for packet in envelope.audio {
+                     let pcm = try decoder.decode(packet)
+                     level = pcm.map(abs).max() ?? 0
+@@ -416,12 +467,23 @@
+                     if let event = MicKeyTestEvent(frame: c), event.sequence != lastKeyTestSequence {
+                         lastKeyTestSequence = event.sequence
+                         record("key_test_event", ["button": event.button.rawValue, "sequence": event.sequence])
++                        let key = MicButtonEvent(independent: event, time: Date().timeIntervalSince1970)
++                        if event.button == .link { presses += 1 }
++                        if isRecording { buttonEvents.append(key) }
+                         keyTestEvent?(event)
+                     }
+-                    if c.count == 58, c[4] == 0x3a, c[5] == 2, c[8] == 0, c[9] == 2, c[10] == 0xff { statusRouteSeen = true }
++                    controlFramesReceived += 1
++                    let kind = "\(c.count):" + c[4...5].map { String(format: "%02x", $0) }.joined() + ":" + c[8...10].map { String(format: "%02x", $0) }.joined()
++                    if controlKinds.count < 16, controlKinds.insert(kind).inserted {
++                        record("control_kind_received", ["header": kind])
++                    }
++                    if c.count == 58, c[4] == 0x3a, c[5] == 2, c[8] == 0, c[9] == 2, c[10] == 0xff {
++                        statusRouteSeen = true; statusFramesReceived += 1
++                    }
+                     if let request = query {
+                         do {
+                             if let payload = try request.reply(c) {
++                                if request.command == .battery { batteryUpdate?(Int(payload[0])) }
+                                 finishQuery(request.summary(payload) + "；SPP 保持连接", kind: "control_reply",
+                                             fields: ["control_hex": c.map { String(format: "%02x", $0) }.joined()], payload: payload)
+                             }
+@@ -431,8 +493,9 @@
+                         }
+                     }
+                     for event in buttons.observe(c, time: Date().timeIntervalSince1970) {
+-                        if event.button == .link { presses += 1 }
+-                        if isRecording { buttonEvents.append(event) }
++                        record("button_received", ["button": event.button.rawValue, "sequence": event.sequence,
++                                                   "previous": event.previousValue, "value": event.value])
++                        // Observer refreshes settings only; shortcuts use keyTestEvent.
+                         buttonEvent?(event)
+                     }
+                 }

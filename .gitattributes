@@ -1,0 +1,19 @@
+* text=auto
+*.swift text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.png binary
+*.icns binary
+
+# These exclusions affect git archive only, not Git history or git push.
+.agents export-ignore
+.local export-ignore
+skills-lock.json export-ignore
+HANDOFF.md export-ignore
+HANFOFF.md export-ignore
+START-HERE.txt export-ignore
+TRANSFER-MANIFEST.json export-ignore
+docs/CURRENT-STATE.txt export-ignore
+docs/diagnostics export-ignore
+Resources/MicBridge/Devices/*.png export-ignore

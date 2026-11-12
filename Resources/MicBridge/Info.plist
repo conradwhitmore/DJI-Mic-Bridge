@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>MicBridge</string>
+<key>CFBundleIdentifier</key><string>org.dji-mic-rxless.micbridge</string>
+<key>CFBundleName</key><string>MicBridge</string>
+<key>CFBundleDisplayName</key><string>MicBridge</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.4.2</string>
+<key>CFBundleVersion</key><string>44</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>LSUIElement</key><true/>
+<key>NSBluetoothAlwaysUsageDescription</key><string>读取已配对的 DJI Mic；在手动连接或启用自动 SPP 后接收音频，仅开始录音后保存。</string>
+<key>NSBluetoothPeripheralUsageDescription</key><string>连接已配对的 DJI Mic 2 并通过 SPP 接收音频。</string>
+<key>NSMicrophoneUsageDescription</key><string>仅在你点击 HFP 测试录音后采集所选 DJI 发射器的普通蓝牙音频，用于查看电平、保存测试录音和试听。</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>

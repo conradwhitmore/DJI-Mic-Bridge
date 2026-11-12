@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+if [[ "${3:-/}" != "/" ]]; then
+    echo '请安装到当前启动磁盘。' >&2
+    exit 1
+fi
+if /usr/bin/pgrep -x MicBridge >/dev/null; then
+    echo '请先从 MicBridge 菜单选择“退出”，再重新安装。' >&2
+    exit 1
+fi
+check_destination() {
+    local destination="$1" expected="$2" actual
+    if [[ -L "$destination" ]]; then
+        echo "安装位置不能是符号链接：$destination" >&2; exit 1
+    fi
+    if [[ -e "$destination" ]]; then
+        actual=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$destination/Contents/Info.plist")
+        if [[ "$actual" != "$expected" ]]; then
+            echo "安装位置被其他应用或驱动占用：$destination" >&2; exit 1
+        fi
+    fi
+}
+check_destination /Applications/MicBridge.app org.dji-mic-rxless.micbridge
+check_destination /Library/Audio/Plug-Ins/HAL/MicBridgeAudio.driver org.dji-mic-rxless.MicBridgeAudio
+# No process killing, Bluetooth reset, route changes or BlackHole removal.

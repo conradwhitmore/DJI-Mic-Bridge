@@ -1,0 +1,114 @@
+--- AudioRoutes.swift
++++ AudioRoutes.swift
+@@ -1,6 +1,7 @@
+ import Foundation
+ import CoreAudio
+ import MicLinkCore
++import MicBridgeSupport
+ 
+ final class AudioRoutes {
+     let target: String
+@@ -45,17 +46,36 @@
+         var size: UInt32 = 0
+         return AudioObjectGetPropertyDataSize(id, &p, 0, nil, &size) == noErr && size > 0
+     }
++    func isBridgeInput(_ id: AudioDeviceID) throws -> Bool {
++        guard hasStream(id, input: true),
++              try integer(id, kAudioDevicePropertyDeviceIsAlive) == 1 else { return false }
++        return try VirtualInputIdentity.matches(uid: string(id, kAudioDevicePropertyDeviceUID),
++            name: string(id, kAudioObjectPropertyName), manufacturer: string(id, kAudioObjectPropertyManufacturer),
++            transport: integer(id, kAudioDevicePropertyTransportType))
++    }
+     private func isSafeAlternative(_ id: AudioObjectID, input: Bool) throws -> Bool {
+         guard id != kAudioObjectUnknown, try !isDJI(id), hasStream(id, input: input),
+               try integer(id, kAudioDevicePropertyDeviceIsAlive) == 1 else { return false }
+-        // A generic aggregate/virtual device may forward into Mic 2. Until its
+-        // members can be verified, only physical local routes are guard targets.
+-        let physical: [UInt32] = [kAudioDeviceTransportTypeBuiltIn, kAudioDeviceTransportTypeUSB,
+-            kAudioDeviceTransportTypePCI, kAudioDeviceTransportTypeFireWire,
+-            kAudioDeviceTransportTypeThunderbolt, kAudioDeviceTransportTypeHDMI,
+-            kAudioDeviceTransportTypeDisplayPort]
+-        return physical.contains(try integer(id, kAudioDevicePropertyTransportType))
++        // The MicBridge loopback reports USB for app compatibility but must never
++        // become the physical output/alert fallback.
++        return try VirtualInputIdentity.allowsRoute(uid: string(id, kAudioDevicePropertyDeviceUID),
++            name: string(id, kAudioObjectPropertyName), manufacturer: string(id, kAudioObjectPropertyManufacturer),
++            transport: integer(id, kAudioDevicePropertyTransportType), input: input)
+     }
++    private func preferredInput(_ all: [AudioObjectID], current: AudioObjectID?, locked: AudioObjectID? = nil) throws -> AudioObjectID {
++        let candidates = all.compactMap { id -> SPPInputSelection.Candidate? in
++            guard (try? isSafeAlternative(id, input: true)) == true else { return nil }
++            let bridge = try? VirtualInputIdentity.profile(uid: string(id, kAudioDevicePropertyDeviceUID),
++                name: string(id, kAudioObjectPropertyName), manufacturer: string(id, kAudioObjectPropertyManufacturer),
++                transport: integer(id, kAudioDevicePropertyTransportType))
++            return .init(id: id, bridge: bridge,
++                builtIn: (try? integer(id, kAudioDevicePropertyTransportType)) == kAudioDeviceTransportTypeBuiltIn)
++        }
++        guard let selected = SPPInputSelection.choose(candidates, current: current, locked: locked) else {
++            throw StreamError.invalid("没有可用的非 DJI 输入设备")
++        }
++        return selected
++    }
+     func lock() throws {
+         let all = try devices()
+         for device in all where try isTarget(device) {
+@@ -67,10 +87,11 @@
+             let current = try integer(system, selector)
+             let input = selector == kAudioHardwarePropertyDefaultInputDevice
+             let chosen: AudioObjectID
+-            if try isSafeAlternative(current, input: input) { chosen = current }
++            if input { chosen = try preferredInput(all, current: current) }
++            else if try isSafeAlternative(current, input: false) { chosen = current }
+             else {
+                 let candidates = try all.filter { try isSafeAlternative($0, input: input) }
+-                let candidate = input ? candidates.first : candidates.first(where: { (try? integer($0, kAudioDevicePropertyTransportType)) == kAudioDeviceTransportTypeBuiltIn }) ?? candidates.first
++                let candidate = candidates.first(where: { (try? integer($0, kAudioDevicePropertyTransportType)) == kAudioDeviceTransportTypeBuiltIn }) ?? candidates.first
+                 guard let candidate else { throw StreamError.invalid("需要一个可用的非 DJI 实体\(input ? "输入" : "输出")设备（内建、USB 等）") }
+                 chosen = candidate
+             }
+@@ -90,7 +111,7 @@
+             for device in all where try isTarget(device) {
+                 present = true
+                 if try integer(device, kAudioDevicePropertyDeviceIsRunningSomewhere) != 0 && !allowTargetAudio {
+-                    observationError = StreamError.invalid("检测到 Mic 2 系统音频活动，已停止 SPP 实验")
++                    observationError = StreamError.invalid("检测到 Mic 2 系统音频活动，已停止 SPP")
+                 }
+             }
+             if requirePresent && !present { observationError = StreamError.invalid("Mic 2 音频设备已离线") }
+@@ -104,6 +125,18 @@
+         if let observationError { throw observationError }
+     }
+     func restoreLockedDefaults(allowDefaultInput: Bool = false) throws {
++        // Keep the preferred bridge as the actual lock target, including after
++        // Bluetooth reconnects. Re-evaluate driver availability without opening
++        // any hardware input; output/alert protection remains independent.
++        var inputSelectionError: Error?
++        if !allowDefaultInput {
++            do {
++                let input = kAudioHardwarePropertyDefaultInputDevice
++                let chosen = try preferredInput(devices(), current: try? integer(system, input), locked: locked[input])
++                lockedUIDs[chosen] = try string(chosen, kAudioDevicePropertyDeviceUID)
++                locked[input] = chosen
++            } catch { inputSelectionError = error }
++        }
+         let enforced = selectors.filter { !allowDefaultInput || $0 != kAudioHardwarePropertyDefaultInputDevice }
+         let failures = LockedRouteRestorer.restore(selectors: enforced, locked: locked,
+             isAlive: { expected in
+@@ -124,12 +157,15 @@
+                     throw StreamError.invalid("无法保持非 DJI 音频路由")
+                 }
+             })
+-        if !failures.isEmpty { throw StreamError.invalid(failures.map(\.message).joined(separator: "；")) }
++        var messages = failures.map(\.message)
++        if let inputSelectionError { messages.append(inputSelectionError.localizedDescription) }
++        if !messages.isEmpty { throw StreamError.invalid(messages.joined(separator: "；")) }
+     }
+     static func checkPlaybackOutput() throws {
+         let reader = AudioRoutes(target: "unused")
+         let id = try reader.integer(reader.system, kAudioHardwarePropertyDefaultOutputDevice)
+         let name = try reader.string(id, kAudioObjectPropertyName)
+-        guard !name.uppercased().contains("DJI") else { throw StreamError.invalid("请将系统输出切换为 Mac 扬声器或其他非 DJI 设备后播放") }
++        let uid = try reader.string(id, kAudioDevicePropertyDeviceUID)
++        guard !name.uppercased().contains("DJI"), !VirtualInputIdentity.isLoopbackUID(uid) else { throw StreamError.invalid("请将系统输出切换为 Mac 扬声器或其他非 DJI 设备后播放") }
+     }
+ }
