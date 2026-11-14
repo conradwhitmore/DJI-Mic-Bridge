@@ -14,8 +14,10 @@ public enum MicModel: String, CaseIterable, Identifiable {
         }
     }
     public var imageName: String? { self == .unknown ? nil : rawValue }
-    /// Only this adapter has a verified transport/codec and command layout.
-    public var adapter: MicAdapter? { self == .mic2 ? .mic2SPP : nil }
+    /// Each supported model uses its own verified transport/status layout.
+    public var adapter: MicAdapter? {
+        switch self { case .mic2: return .mic2SPP; case .mini2: return .mini2SPP; default: return nil }
+    }
     public var compatibility: String { adapter == nil ? "暂不支持连接与指令" : "支持 SPP 收音、录音与按键监听" }
     public static func identify(_ name: String) -> MicModel {
         let n = name.uppercased().filter { $0.isLetter || $0.isNumber }
@@ -30,7 +32,7 @@ public enum MicModel: String, CaseIterable, Identifiable {
 }
 
 public enum MicAdapter: String {
-    case mic2SPP
+    case mic2SPP, mini2SPP
 }
 
 /// Preferences are app-scoped. Launch at login is managed separately by SMAppService.

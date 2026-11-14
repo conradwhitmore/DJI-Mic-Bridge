@@ -13,6 +13,10 @@ public struct MicButtonEvent: Codable {
         self.button = button; self.sequence = sequence; self.timestamp = timestamp
         self.previousValue = previousValue; self.value = value; source = nil
     }
+    public init(button: MicButton, time: TimeInterval, source: String) {
+        self.button = button; sequence = 0; timestamp = time
+        previousValue = 0; value = 1; self.source = source
+    }
     public init(independent event: MicKeyTestEvent, time: TimeInterval) {
         button = event.button; sequence = event.sequence; timestamp = time
         previousValue = 0; value = 1; source = "04/68"

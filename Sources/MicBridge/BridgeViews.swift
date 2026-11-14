@@ -53,6 +53,7 @@ struct ProductArtwork: View {
     let model: MicModel
     var size: CGFloat = 106
     var visibleHeight: CGFloat? = nil
+    var alignment: Alignment = .top
     var body: some View {
         Group {
             if let name = model.imageName, let url = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "Devices"),
@@ -60,7 +61,7 @@ struct ProductArtwork: View {
                 if visibleHeight != nil { Image(nsImage: image).resizable().scaledToFit() }
                 else { Image(nsImage: image).resizable().scaledToFit().scaleEffect(model == .mic2 ? 1.5 : 1.22) }
             } else { Image(systemName: "mic").font(.system(size: 33, weight: .light)).foregroundStyle(.secondary) }
-        }.frame(width: size, height: visibleHeight ?? size, alignment: .top).clipped().accessibilityLabel(model.title + "产品图")
+        }.frame(width: size, height: visibleHeight ?? size, alignment: alignment).clipped().accessibilityLabel(model.title + "产品图")
     }
 }
 struct StudioSignal: NSViewRepresentable {
@@ -145,6 +146,7 @@ struct ReferenceHeading: View {
 
 struct DeviceBatteryIndicator: View {
     let percent: Int
+    var estimatedRange: ClosedRange<Int>? = nil
     private var tint: Color { percent <= 20 ? .red : .green }
     var body: some View {
         HStack(spacing: 6) {
@@ -162,7 +164,7 @@ struct DeviceBatteryIndicator: View {
         }.font(.system(size: 11, weight: .medium))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("剩余电量 \(percent)%")
-            .help("设备最近报告的剩余电量")
+            .help(estimatedRange.map { "按设备电量档位换算，实际范围 \($0.lowerBound)–\($0.upperBound)%" } ?? "设备最近报告的剩余电量")
     }
 }
 
@@ -206,7 +208,7 @@ struct BridgeWindow: View {
         .alert("断开 SPP？", isPresented: $confirmDisconnect) {
             Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
             Button("断开", role: .destructive) { model.disconnect() }
-        } message: { Text("结束录音并断开 SPP。退出后建议将 Mic 2 关机再开机，再使用普通蓝牙录音。") }
+        } message: { Text("结束录音并断开 SPP。退出后建议将发射器关机再开机，再使用普通蓝牙录音。") }
 
     }
     private var stateColor: Color {
@@ -245,11 +247,11 @@ struct BridgeWindow: View {
     }
     private var mappingCard: some View {
         ReferenceCard {
-            ButtonMappingPanel(shortcuts: model.buttonShortcuts,
-                available: model.preview || model.selected?.model.adapter == .mic2SPP,
+            ButtonMappingPanel(model: model.model, shortcuts: model.buttonShortcuts,
+                available: model.preview || model.selected?.model.adapter != nil,
                 connected: model.phase == .streaming, canConnect: model.canConnect,
                 connect: { model.connect() }, hotkeyEnabled: model.hotkeyEnabled,
-                hotkeyActive: model.keyMode.enabled == true, modeBusy: model.keyMode.busy,
+                hotkeyActive: model.hotkeyActive, modeBusy: model.keyMode.busy,
                 modeStatus: model.hotkeyStatus, canChangeMode: model.canChangeHotkey,
                 setHotkey: { model.setHotkey($0) })
         }
@@ -260,18 +262,21 @@ struct BridgeWindow: View {
     private var deviceCard: some View {
         ReferenceCard {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 20) {
-                    ProductArtwork(model: model.model, size: 96, visibleHeight: 136)
+                HStack(spacing: model.model == .mini2 ? 12 : 20) {
+                    ProductArtwork(model: model.model, size: model.model == .mini2 ? 116 : 96,
+                                   visibleHeight: 136, alignment: model.model == .mini2 ? .center : .top)
                         .shadow(color: .black.opacity(0.12), radius: 5, y: 5)
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(model.model.title).font(.system(size: 24, weight: .bold)).lineLimit(1).minimumScaleFactor(0.8)
+                        Text(model.model == .mini2 ? "Mic Mini 2" : model.model.title)
+                            .font(.system(size: model.model == .mini2 ? 22 : 24, weight: .bold))
+                            .lineLimit(1).minimumScaleFactor(0.8)
                         HStack(spacing: 6) {
                             Circle().fill(stateColor).frame(width: 6, height: 6)
                             Text(model.bluetoothConnected ? model.connectionLabel : "未连接").font(.system(size: 11, weight: .medium))
                         }.padding(.horizontal, 10).padding(.vertical, 7)
                             .background(Color.primary.opacity(0.045), in: Capsule())
                         if model.bluetoothConnected, let percent = model.batteryPercent, (0...100).contains(percent) {
-                            DeviceBatteryIndicator(percent: percent)
+                            DeviceBatteryIndicator(percent: percent, estimatedRange: model.mini2BatteryLevel?.percentRange)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(height: 142).padding(.bottom, 14)
@@ -299,7 +304,7 @@ struct BridgeWindow: View {
                             .background(panel, in: RoundedRectangle(cornerRadius: 10))
                             .overlay(RoundedRectangle(cornerRadius: 10).stroke(subtle.opacity(0.6)))
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden)
-                        .disabled(model.hfpBusy || model.active || model.captureBlocked || model.importing || model.devices.isEmpty)
+                        .disabled(model.hfpBusy || model.active || model.captureBlocked || model.importing || model.readingMini2Firmware || model.devices.isEmpty)
                         .accessibilityLabel("发射器").help(model.name)
                     Button { model.refresh() } label: {
                         Image(systemName: "arrow.clockwise").font(.system(size: 15))
@@ -328,8 +333,12 @@ struct BridgeWindow: View {
                     HStack(spacing: 8) {
                         Text("降噪模式").font(.system(size: 12, weight: .medium))
                         Spacer(minLength: 4)
-                        if model.denoise.busy { ProgressView().controlSize(.mini) }
-                        if let enabled = model.denoise.enabled {
+                        if model.model == .mini2 {
+                            Text(model.mini2Denoise.map { $0 ? "开启" : "关闭" } ?? "—")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        } else if model.denoise.busy {
+                            ProgressView().controlSize(.mini)
+                        } else if let enabled = model.denoise.enabled {
                             Toggle("降噪模式", isOn: Binding(get: { enabled }, set: { model.setDenoise($0) }))
                                 .labelsHidden().toggleStyle(.switch).controlSize(.small)
                                 .disabled(!model.canChangeDenoise)
@@ -350,7 +359,7 @@ struct BridgeWindow: View {
                             .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
                         Text("设备详情").font(.system(size: 12, weight: .semibold))
                         Spacer()
-                        Text("固件 \(model.firmware)").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text("固件 \(model.firmware)").font(.system(size: 10)).foregroundStyle(.secondary).help(model.firmwareHint)
                         Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(.tertiary)
                     }.padding(.top, 10)
                 }.buttonStyle(.plain)

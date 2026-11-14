@@ -2,7 +2,7 @@
 
 [简体中文](README.md) · [Build](docs/BUILDING.md) · [Contributing](CONTRIBUTING.md)
 
-A native macOS app that receives audio directly from a **DJI Mic 2 transmitter over Bluetooth SPP**, without a hardware receiver. Current development version: **0.4.2**. Independent community project; not affiliated with DJI.
+A native macOS app that receives audio directly from a **DJI Mic 2 / Mic Mini 2 transmitter over Bluetooth SPP**, without a hardware receiver. Current development version: **0.5.1**. Independent community project; not affiliated with DJI.
 
 > **Development status:** This is an experimental development version intended only for research and development testing. **It is not suitable for production use.** Connections, audio routing, and device compatibility may be unstable. Users should assess the risks and be prepared to diagnose and resolve issues themselves.
 
@@ -14,13 +14,13 @@ A native macOS app that receives audio directly from a **DJI Mic 2 transmitter o
 
 - 48 kHz mono decoding, live meters, segmented WAV recording and playback.
 - System microphone output through the separate **MicBridge Audio** HAL driver; existing BlackHole 2ch is also supported.
-- Hotkey mode maps independent `04/68` short-press events to Mac shortcuts, with blue icon and arrow feedback.
-- Per-device mapping preference applied on connection; disabling it restores the original button functions. Long-press power-off remains available.
-- App-controlled noise reduction with readback verification, usable alongside hotkey mode.
-- Firmware and battery queries; battery refreshes every two minutes after the initial query.
+- Mic 2 hotkey mode maps independent `04/68` short-press events to Mac shortcuts, with blue icon and arrow feedback.
+- Mic 2 per-device mapping preference applied on connection; disabling it restores the original button functions. Long-press power-off remains available.
+- Mic 2 app-controlled noise reduction with readback verification, usable alongside hotkey mode.
+- Mic 2 firmware and battery queries; battery refreshes every two minutes after the initial query.
 - Restore ordinary button functions before quitting; quit for now without `12/65`, or restore ordinary microphone mode with acknowledged `12/65` shutdown. Menu bar residence and login-item configuration are included.
 
-Only Mic 2 is currently supported (hardware-tested firmware: 04.05.02.31). Other model entries are placeholders. Deployment target: macOS 13+, with Xcode / Swift 5.10+ required to build. Hardware and OS coverage is limited; see [validation](docs/VALIDATION.md).
+Mic 2 (firmware 04.05.02.31) and Mini 2 (Demo-tested firmware 02.03.17.00) have separate SPP adapters. Mini and Mic 3 remain placeholders. Mini 2 maps a connection-button single click and a power-button double click; the latter is inferred from a noise-reduction state change and still changes actual noise reduction. Its mapping toggle only controls shortcut dispatch, without factory mode or a software noise-reduction switch. Battery percentages are estimates derived from seven SPP status bands. Before the first connection, the app attempts a read-only BLE firmware query, caches the result per device, and disconnects BLE before opening SPP. Cached connections skip BLE. Deployment target: macOS 13+, with Xcode / Swift 5.10+ required to build. Hardware and OS coverage is limited; see [validation](docs/VALIDATION.md).
 
 ## Cloud builds and releases
 

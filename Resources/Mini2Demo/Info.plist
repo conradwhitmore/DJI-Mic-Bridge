@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Mini2Demo</string>
+<key>CFBundleIdentifier</key><string>org.micbridge.mini2-demo</string>
+<key>CFBundleName</key><string>MicBridge Mini 2 Demo</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.6</string>
+<key>CFBundleVersion</key><string>7</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>由你手动扫描和连接 DJI Mic Mini 2，验证控制指令、物理按键报告与 SPP 原始数据。</string>
+<key>NSBluetoothPeripheralUsageDescription</key><string>用于你主动发起的 DJI Mic Mini 2 蓝牙协议测试。</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>

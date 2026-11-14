@@ -8,9 +8,16 @@ App 和驱动使用 **ad-hoc 签名**，不使用个人 Apple 证书；pkg 未�
 
 更新前在 MicBridge 选择“仅本次退出”，然后安装新包；按安装器提示重启 Mac。安装、使用及卸载步骤见 [README](https://github.com/conradwhitmore/DJI-Mic-Bridge#安装)。
 
+### 0.5.1 新增
+
+- Mini 2 普通 SPP 收音与录音：48 kHz、LC3，每帧 5 ms。
+- 两个热键：连接键单击、电源键双击；后者根据降噪状态变化识别，仍切换真实降噪。
+- Mini 2 电量从 SPP 七档状态换算显示；首次连接前通过 BLE 读取并缓存固件，断开 BLE 后再进入 SPP。
+- Mic 2 保留原有独立三键模式与降噪控制。
+
 ### 已知问题与验证范围
 
-部分连接会协商到 RFCOMM MTU 666，表现为已有 SPP 电平，但固件、电量或按键事件缺失，录音也可能丢字或不连续。目前没有可靠修复；首次连接无法获取固件信息时，可以尝试重新连接蓝牙并重启 Mic 2，但不能保证恢复。欢迎有 Bluetooth Classic/RFCOMM、macOS 蓝牙或嵌入式协议经验的开发者通过 [Issues](https://github.com/conradwhitmore/DJI-Mic-Bridge/issues) 协助调查，提交前请脱敏日志。
+部分 Mic 2 连接会协商到 RFCOMM MTU 666，表现为已有 SPP 电平，但固件、电量或按键事件缺失，录音也可能丢字或不连续。目前没有可靠修复；首次连接无法获取固件信息时，可以尝试重新连接蓝牙并重启 Mic 2，但不能保证恢复。欢迎有 Bluetooth Classic/RFCOMM、macOS 蓝牙或嵌入式协议经验的开发者通过 [Issues](https://github.com/conradwhitmore/DJI-Mic-Bridge/issues) 协助调查，提交前请脱敏日志。
 
 GitHub Actions 执行离线测试，并检查两种架构的安装包、签名、驱动源码及设备图片。云端校验不代表真实蓝牙设备或音质验收。**本项目仍处于实验阶段，不适合生产或关键录音场景。**
 
@@ -20,4 +27,6 @@ GitHub Actions 执行离线测试，并检查两种架构的安装包、签名�
 
 Development preview for macOS 13+. Choose the AppleSilicon or Intel installer; both include the app, audio driver, and device artwork. The app and driver are ad-hoc signed without personal Apple certificates. The pkg is unsigned and unnotarized. Only if blocked, use System Settings → Privacy & Security → Open Anyway.
 
-Some RFCOMM MTU 666 sessions have audio levels but missing metadata/key events and audio dropouts. There is no reliable fix yet. Bluetooth reconnection and a Mic 2 restart may help but are not guaranteed. Contributions with sanitized diagnostics are welcome. Cloud checks do not replace hardware/audio testing. Experimental use only, not for production. Modified GPL driver source and checksums are included.
+Some Mic 2 RFCOMM MTU 666 sessions have audio levels but missing metadata/key events and audio dropouts. There is no reliable fix yet. Bluetooth reconnection and a Mic 2 restart may help but are not guaranteed. Contributions with sanitized diagnostics are welcome. Cloud checks do not replace hardware/audio testing. Experimental use only, not for production. Modified GPL driver source and checksums are included.
+
+Mini 2 support: 48 kHz LC3 over ordinary SPP, connection-button single-click and power-button double-click shortcuts, seven-band battery estimates, and a BLE firmware preflight cached per transmitter. The double-click proxy still toggles actual noise reduction. Mic 2 retains its separate three-button mode.
