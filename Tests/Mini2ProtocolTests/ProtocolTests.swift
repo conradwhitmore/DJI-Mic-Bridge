@@ -121,7 +121,12 @@ final class Mini2ProtocolTests: XCTestCase {
         let control = frame(set: 0x5b, id: 3, payload: [UInt8](repeating: 0x12, count: 260))
         var block = [UInt8](repeating: 0, count: 125)
         block.replaceSubrange(6..<9, with: [0x55, 0x77, 5]); block[124] = 0xcd
-        let raw: [UInt8] = [0xaa, UInt8(2 << 2) | UInt8(control.count >> 8), UInt8(control.count & 255)] + block + block + control + [0xa5]
+        let descriptor = UInt8(2 << 2) | UInt8(control.count >> 8)
+        var raw: [UInt8] = [0xaa, descriptor, UInt8(control.count & 255)]
+        raw.append(contentsOf: block)
+        raw.append(contentsOf: block)
+        raw.append(contentsOf: control)
+        raw.append(0xa5)
         for split in [1, 2, 3, 127, 253, raw.count - 1] {
             var parser = Mini2SPPParser()
             let result = parser.feed(Data(raw.prefix(split))) + parser.feed(Data(raw.dropFirst(split)))
