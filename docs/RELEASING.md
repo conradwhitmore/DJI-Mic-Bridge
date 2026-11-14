@@ -4,10 +4,11 @@
 
 ## GitHub Actions
 
-工作流：`.github/workflows/release.yml`（**Build and release**）。构建运行在 GitHub 托管的 macOS runner，不需要上传 Apple 证书或配置签名 Secrets；发布使用仓库内置的 `GITHUB_TOKEN`。
+工作流：`.github/workflows/release.yml`（**Build and release**）。构建运行在 GitHub 托管的 `macos-15-intel` runner，并交叉编译两种架构，避免 ARM runner 容量不足导致任务未启动即失败。不需要上传 Apple 证书或配置签名 Secrets；发布使用仓库内置的 `GITHUB_TOKEN`。
 
 - **唯一发布入口**：推送 `v<版本号>` 标签后，构建该标签指向的代码；版本必须与 `Resources/MicBridge/Info.plist` 的 `CFBundleShortVersionString` 一致。所有检查通过后，自动发布为 GitHub **Pre-release**，两份 pkg 放在 Release 附件中，不受 Actions 构建产物 14 天保留期限制。发布工作流不提供手动触发入口；普通 `main` 提交只运行 CI 检查。
 - **失败重试**：重跑失败的工作流可继续未发布的草稿。已发布的 Release 不会自动覆盖；后续更新使用新版本标签。不要移动已经发布的标签。
+- 标签构建已包含完整离线检查，不再额外触发一份普通 CI。
 
 发布新版本时，更新 App 版本号、构建号、相关文档及 `packaging/micbridge/release-notes.md`，提交并推送 `main`，再推送对应标签。例如，App 版本更新为 `0.5.2` 后：
 

@@ -13,7 +13,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    # Cross-compile both installers from Intel to avoid the constrained arm64 pool.
+    runs-on: macos-15-intel
     timeout-minutes: 30
     outputs:
       version: ${{ steps.version.outputs.version }}
