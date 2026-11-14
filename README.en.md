@@ -24,7 +24,7 @@ Mic 2 (firmware 04.05.02.31) and Mini 2 (Demo-tested firmware 02.03.17.00) have 
 
 ## Cloud builds and releases
 
-The **Build and release** GitHub Actions workflow builds directly from the repository, including device artwork, without personal Apple certificates. Run it manually on `main` to download build artifacts. Pushing a `v<version>` tag matching the app version publishes a pre-release only after tests and package verification succeed. See the [release workflow](docs/RELEASING.md).
+The **Build and release** GitHub Actions workflow builds directly from the repository, including device artwork, without personal Apple certificates. Releases are triggered only by pushing a `v<version>` tag matching the app version; the workflow publishes a pre-release only after tests and package verification succeed. See the [release workflow](docs/RELEASING.md).
 
 ## Build
 

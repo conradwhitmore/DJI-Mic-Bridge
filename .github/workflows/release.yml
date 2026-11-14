@@ -3,7 +3,6 @@ name: Build and release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -64,7 +63,7 @@ jobs:
           retention-days: 14
 
   publish:
-    # Manual builds of branches only produce downloadable Actions artifacts.
+    # Release publication is restricted to version-tag builds.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest

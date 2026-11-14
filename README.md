@@ -87,7 +87,7 @@ sudo pkgutil --forget org.dji-mic-rxless.micbridge.installer
 
 ## 云端构建与发布
 
-GitHub Actions 的 **Build and release** 工作流直接从仓库构建，保留设备渲染图，无需个人 Apple 证书。手动选择 `main` 运行可下载构建产物；推送与 App 版本一致的 `v<版本号>` 标签后，测试和安装包校验通过才会自动发布 Pre-release。详见 [发布流程](docs/RELEASING.md)。
+GitHub Actions 的 **Build and release** 工作流直接从仓库构建，保留设备渲染图，无需个人 Apple 证书。发布只需推送与 App 版本一致的 `v<版本号>` 标签后，测试和安装包校验通过才会自动发布 Pre-release。详见 [发布流程](docs/RELEASING.md)。
 
 ## 本地构建与检查
 
