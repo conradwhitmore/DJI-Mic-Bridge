@@ -31,7 +31,7 @@ MicBridge $version — V2 开发测试安装包 / Development test packages
 不需要另装 BlackHole。MicBridgeAudio-Source.tar.gz 为 GPL 驱动的对应修改源码。
 
 安装前从 MicBridge 菜单选择“仅本次退出”；首次安装驱动后重启 Mac。
-随后在系统设置中配对 Mic 2 或 Mic Mini 2，打开 MicBridge，允许蓝牙权限。
+随后在系统设置中配对 Mic 2、Mic Mini 或 Mic Mini 2，打开 MicBridge，允许蓝牙权限。
 设置热键时按系统提示允许辅助功能；在接收软件选择 MicBridge Audio 输入。
 
 这是未公证的开发测试包，不适合生产环境。App/驱动仅使用 ad-hoc 签名，

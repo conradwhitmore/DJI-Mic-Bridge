@@ -40,6 +40,22 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
     @Published private(set) var busy = false
     @Published private(set) var version = "—"
     @Published private(set) var battery = "—"
+    @Published private(set) var gainValue = "—"
+    @Published private(set) var audioModeValue = "—"
+    @Published private(set) var gainTrialActive = false
+    private var gainOwner: UUID?
+    private var gainRaw: UInt8?
+    private var audioModeRaw: UInt8?
+    private var gainReadAt: TimeInterval = 0
+    private var modeReadAt: TimeInterval = 0
+    private var gainRestoreAt: TimeInterval?
+    private var gainReadQueued = false
+    private var gainRestoreSent = false
+    var canProbeGain: Bool {
+        canQuery && verifiedModel && audioModeRaw == 2 && gainRaw == 0 && !gainTrialActive && !keyMayBeActive &&
+        now - gainReadAt < 60 && now - modeReadAt < 60
+    }
+    var canRestoreGain: Bool { canQuery && gainTrialActive && gainOwner == peripheral?.identifier }
     @Published private(set) var key6 = 0
     @Published private(set) var key7 = 0
     @Published private(set) var lastKey: UInt8?
@@ -70,12 +86,15 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
     private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
     var connected: Bool { peripheral?.state == .connected }
     var canQuery: Bool { connected && subscribed && !writeID.isEmpty && !busy && !writeInFlight && !exitQueued && !otaLocked }
-    var canEnter: Bool { canQuery && verifiedModel && exitVerified && !keyMayBeActive }
+    var canEnter: Bool { canQuery && verifiedModel && exitVerified && !keyMayBeActive && !gainTrialActive }
     var canDisconnect: Bool { peripheral != nil }
     var canChangeEndpoints: Bool { connected && !busy && !writeInFlight && !keyMayBeActive && !subscribed && !otaLocked }
 
     init(log: DemoLog) {
         self.log = log; self.ota = StockOTAController(log: log); super.init()
+        if let saved = UserDefaults.standard.string(forKey: "unfinishedMini2GainTrial"), let id = UUID(uuidString: saved) {
+            gainOwner = id; gainTrialActive = true
+        }
         if let saved = UserDefaults.standard.string(forKey: "unfinishedMini2KeyTrial"), let id = UUID(uuidString: saved) {
             keyOwner = id; keyMayBeActive = true
             keyState = "上次测试退出未确认 · 请连接原设备确认退出"
@@ -143,11 +162,13 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
         lostConnection(error?.localizedDescription ?? "BLE 已断开")
     }
     private func resetConnection() {
+        gainRaw = nil; audioModeRaw = nil; gainReadAt = 0; modeReadAt = 0
+        gainReadQueued = false; gainRestoreSent = false; gainRestoreAt = nil
         otaWrite = nil; otaNotify = nil; otaStarting = false
         versionReadAt = 0; batteryReadAt = 0; batteryPercent = nil
         characteristics = []; writeID = ""; notifyID = ""; subscribed = false
         subscribedCharacteristic = nil; pending = nil; busy = false; writeInFlight = false
-        parser = Mini2DUMLParser(); version = "—"; battery = "—"; verifiedModel = false; exitVerified = false
+        parser = Mini2DUMLParser(); gainValue = "—"; audioModeValue = "—"; version = "—"; battery = "—"; verifiedModel = false; exitVerified = false
     }
     private func lostConnection(_ message: String) {
         ota.disconnected()
@@ -208,9 +229,21 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
         log.add(status)
     }
     func query(_ command: Mini2Command) {
+        guard command != .gainProbeOne && command != .gainRestoreZero else { return }
         guard command != .keyEnter || canEnter else { return }
         guard canQuery else { return }
         send(command)
+    }
+    func probeGain() {
+        guard canProbeGain, let id = peripheral?.identifier else { return }
+        gainOwner = id; gainTrialActive = true; gainRestoreSent = false
+        UserDefaults.standard.set(id.uuidString, forKey: "unfinishedMini2GainTrial")
+        gainRestoreAt = now + 10
+        send(.gainProbeOne)
+    }
+    func restoreGain() {
+        guard canRestoreGain else { return }
+        gainRestoreAt = nil; gainRestoreSent = true; send(.gainRestoreZero)
     }
     private func send(_ command: Mini2Command) {
         guard let p = peripheral, p.state == .connected, subscribed, !writeInFlight, pending == nil,
@@ -277,6 +310,23 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
                     battery = mv > 0 ? "\(payload[0])% · \(mv) mV" : "数据未就绪"
                     batteryPercent = mv > 0 ? Int(payload[0]) : nil; batteryReadAt = now
                     status = "电量查询：\(battery)"
+                case .gainRead:
+                    gainRaw = payload[6]; gainReadAt = now
+                    gainValue = "原始值 \(payload[6])"
+                    status = "增益回读：\(gainValue)（状态值，不代表实测响度）"
+                    if gainRestoreSent, gainOwner == p.identifier, payload[6] == 0 {
+                        gainTrialActive = false; gainOwner = nil; gainRestoreSent = false; gainRestoreAt = nil
+                        UserDefaults.standard.removeObject(forKey: "unfinishedMini2GainTrial")
+                        status = "增益已恢复为原始值 0"
+                    }
+                case .audioModeRead:
+                    let mode = payload[6]
+                    audioModeRaw = mode; modeReadAt = now
+                    audioModeValue = mode == 2 ? "spp_audio" : mode == 1 ? "le_audio" : "其他（\(mode)）"
+                    status = "固件音频模式：\(audioModeValue)"
+                case .gainProbeOne, .gainRestoreZero:
+                    status = "增益设置收到 ACK 00，等待回读"
+                    gainReadQueued = true
                 case .keyEnter:
                     keyState = "已收到进入 ACK · 等待独立按键报告"; status = keyState
                 case .keyExit:
@@ -310,6 +360,7 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
     }
     func disconnect() {
         guard !otaLocked else { return }
+        guard !gainTrialActive else { report("请先恢复增益并回读确认，再断开 BLE"); return }
         guard let p = peripheral else { return }
         if keyMayBeActive {
             requestExit { [weak self, weak p] ok in
@@ -318,6 +369,7 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
         } else { central?.cancelPeripheralConnection(p) }
     }
     func prepareClose(_ completion: @escaping (Bool) -> Void) {
+        guard !gainTrialActive else { report("请先恢复增益并回读确认，再退出 Demo"); completion(false); return }
         guard !otaLocked else { report("官方固件传输中，请等待完成"); completion(false); return }
         stopScan()
         if keyMayBeActive {
@@ -337,6 +389,11 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
             pending = nil; busy = false
             report("\(request.command.rawValue) 回应超时（未视为成功）")
             if request.command == .keyExit { completeExit(false) }
+        }
+        if canRestoreGain, let deadline = gainRestoreAt, now >= deadline {
+            gainReadQueued = false; restoreGain()
+        } else if canQuery, gainReadQueued {
+            gainReadQueued = false; send(.gainRead)
         }
         if let deadline = keyDeadline {
             secondsLeft = max(0, Int(ceil(deadline - now)))
@@ -360,7 +417,7 @@ final class BLEController: NSObject, ObservableObject, CBCentralManagerDelegate,
     private func report(_ text: String) { status = text; log.add(text) }
 
     func startStockOTA(sppActive: Bool) {
-        guard canQuery, ota.prepared, verifiedModel, now - versionReadAt < 120,
+        guard canQuery, !gainTrialActive, ota.prepared, verifiedModel, now - versionReadAt < 120,
               now - batteryReadAt < 120, (batteryPercent ?? 0) >= 50,
               !keyMayBeActive, exitVerified, !sppActive,
               let p = peripheral, let notify = otaNotify, otaWrite != nil else {

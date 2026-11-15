@@ -21,6 +21,7 @@ struct BridgeSettingsView: View {
                             .foregroundStyle(selection.page == page ? Color.blue : .secondary)
                             .background(selection.page == page ? Color(nsColor: .controlBackgroundColor) : .clear, in: RoundedRectangle(cornerRadius: 10))
                             .shadow(color: selection.page == page ? .black.opacity(0.04) : .clear, radius: 3, y: 1)
+                            .contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityAddTraits(selection.page == page ? .isSelected : [])
                 }
             }.padding(5).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))

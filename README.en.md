@@ -2,7 +2,7 @@
 
 [简体中文](README.md) · [Build](docs/BUILDING.md) · [Contributing](CONTRIBUTING.md)
 
-A native macOS app that receives audio directly from a **DJI Mic 2 / Mic Mini 2 transmitter over Bluetooth SPP**, without a hardware receiver. Current development version: **0.5.1**. Independent community project; not affiliated with DJI.
+A native macOS app that receives audio directly from a **DJI Mic 2 / Mic Mini / Mic Mini 2 transmitter over Bluetooth SPP**, without a hardware receiver. Current release: **0.5.1**; main additionally includes first-generation Mic Mini support pending hardware validation. Independent community project; not affiliated with DJI.
 
 > **Development status:** This is an experimental development version intended only for research and development testing. **It is not suitable for production use.** Connections, audio routing, and device compatibility may be unstable. Users should assess the risks and be prepared to diagnose and resolve issues themselves.
 
@@ -20,7 +20,7 @@ A native macOS app that receives audio directly from a **DJI Mic 2 / Mic Mini 2 
 - Mic 2 firmware and battery queries; battery refreshes every two minutes after the initial query.
 - Restore ordinary button functions before quitting; quit for now without `12/65`, or restore ordinary microphone mode with acknowledged `12/65` shutdown. Menu bar residence and login-item configuration are included.
 
-Mic 2 (firmware 04.05.02.31) and Mini 2 (Demo-tested firmware 02.03.17.00) have separate SPP adapters. Mini and Mic 3 remain placeholders. Mini 2 maps a connection-button single click and a power-button double click; the latter is inferred from a noise-reduction state change and still changes actual noise reduction. Its mapping toggle only controls shortcut dispatch, without factory mode or a software noise-reduction switch. Battery percentages are estimates derived from seven SPP status bands. Before the first connection, the app attempts a read-only BLE firmware query, caches the result per device, and disconnects BLE before opening SPP. Cached connections skip BLE. Deployment target: macOS 13+, with Xcode / Swift 5.10+ required to build. Hardware and OS coverage is limited; see [validation](docs/VALIDATION.md).
+Mic 2 (firmware 04.05.02.31) and Mini 2 (Demo-tested firmware 02.03.17.00) have separate SPP adapters. First-generation Mini now shares the Mini-family SPP adapter based on firmware 02.03.17.00 analysis; hardware validation is pending. Its connection and power hotkeys both use a single click; the power hotkey is also inferred from actual noise-reduction changes. Mic 3 remains a placeholder. Mini 2 maps a connection-button single click and a power-button double click; the latter is inferred from a noise-reduction state change and still changes actual noise reduction. Its mapping toggle only controls shortcut dispatch, without factory mode. On main, Advanced Diagnostics adds Off/Basic/Strong noise reduction for both Mini generations and Standard/Rich/Bright voice tone for Mini 2; these new controls still require hardware validation. Battery percentages are estimates derived from seven SPP status bands. Before the first connection, the app attempts a read-only BLE firmware query, caches the result per device, and disconnects BLE before opening SPP. Cached connections skip BLE. Deployment target: macOS 13+, with Xcode / Swift 5.10+ required to build. Hardware and OS coverage is limited; see [validation](docs/VALIDATION.md).
 
 ## Cloud builds and releases
 

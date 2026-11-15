@@ -12,6 +12,14 @@ final class FirmwareIdentityTests: XCTestCase {
         XCTAssertEqual(Mini2FirmwareIdentity.addressKey("11-22-33-44-55-66"), Mini2FirmwareIdentity.addressKey("11:22:33:44:55:66"))
     }
 
+    func testMiniDiscoveryRejectsOtherGenerationsAndAddresses() {
+        let address = "11:22:33:44:55:66"
+        XCTAssertTrue(Mini2FirmwareIdentity.matches(advertisedName: "DJI Mic Mini-445566", address: address, model: .mini))
+        for name in ["DJI Mic Mini 2-445566", "DJI Mic Mini-112233", "DJI Mic Mini S-445566", "DJI Mic Mini"] {
+            XCTAssertFalse(Mini2FirmwareIdentity.matches(advertisedName: name, address: address, model: .mini))
+        }
+    }
+
     func testCachePreservesActualVersionAndRejectsInvalidReplies() throws {
         var payload = [UInt8](repeating: 0, count: 30)
         payload.replaceSubrange(2..<18, with: Array("DJI MIC MINI TX".utf8) + [0])

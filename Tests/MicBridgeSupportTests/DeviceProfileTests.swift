@@ -3,13 +3,17 @@ import XCTest
 
 final class DeviceProfileTests: XCTestCase {
     func testModelsCannotInheritMic2Transport() {
-        let pairs: [(String, MicModel)] = [("DJI-MIC2-A1B2C3", .mic2), ("DJI Mic Mini", .mini),
+        let pairs: [(String, MicModel)] = [("DJI-MIC2-A1B2C3", .mic2), ("DJI Mic Mini", .mini), ("DJI Mic Mini-A1B2C3", .mini),
             ("DJI-MIC-MINI2-A1B2C3", .mini2), ("DJI Mic 3", .mic3),
             ("DJI Mic Mini 2S", .unknown), ("DJI Mic 20", .unknown), ("Other Mic 2", .unknown)]
         for (name, model) in pairs { XCTAssertEqual(MicModel.identify(name), model) }
-        for model in MicModel.allCases where model != .mic2 && model != .mini2 { XCTAssertNil(model.adapter) }
+        for model in MicModel.allCases where model != .mic2 && !model.usesMiniSPP { XCTAssertNil(model.adapter) }
         XCTAssertEqual(MicModel.mic2.adapter, .mic2SPP)
         XCTAssertEqual(MicModel.mini2.adapter, .mini2SPP)
+        XCTAssertEqual(MicModel.mini.adapter, .mini2SPP)
+        XCTAssertEqual(MicModel.mini.miniPowerGesture, "单击")
+        XCTAssertEqual(MicModel.mini2.miniPowerGesture, "双击")
+        XCTAssertEqual(MicModel.allCases.filter(\.usesMiniSPP), [.mini, .mini2])
     }
     func testDeletionSurvivesPreferencesReconstructionWithoutEnablingStartupConnection() {
         let suite = "MicBridgeTests-\(UUID())"

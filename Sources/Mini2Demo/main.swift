@@ -23,12 +23,12 @@ final class Mini2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         editItem.submenu = edit; menu.addItem(editItem); NSApp.mainMenu = menu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 760),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "MicBridge Mini 2 Demo · 0.1.6"
+        window.title = "MicBridge Mini 2 Demo · 0.1.9"
         window.contentMinSize = NSSize(width: 780, height: 600)
         window.contentView = NSHostingView(rootView: DemoView(ble: ble, spp: spp, ota: ble.ota, shortcuts: shortcuts, log: log))
         window.delegate = self; window.center(); window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        log.add("Mini 2 Demo 0.1.6 就绪；未扫描、未连接、未改变音频路由")
+        log.add("Mini 2 Demo 0.1.9 就绪；未扫描、未连接、未改变音频路由")
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { NSApp.terminate(nil); return false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -128,6 +128,16 @@ struct DemoView: View {
                             Button("查询电量") { ble.query(.battery) }.disabled(!ble.canQuery)
                             Text(ble.battery).monospacedDigit()
                         }
+                        HStack(spacing: 16) {
+                            Button("读取音频模式") { ble.query(.audioModeRead) }.disabled(!ble.canQuery)
+                            Text(ble.audioModeValue)
+                            Button("读取增益") { ble.query(.gainRead) }.disabled(!ble.canQuery)
+                            Text(ble.gainValue)
+                        }
+                        HStack(spacing: 16) {
+                            Button("增益短测 0 → 1（10 秒恢复）") { ble.probeGain() }.disabled(!ble.canProbeGain)
+                            Button("恢复原始值 0") { ble.restoreGain() }.disabled(!ble.canRestoreGain)
+                        }
                         Text(ble.status).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                     }.padding(8)
                 }
@@ -176,6 +186,9 @@ struct DemoView: View {
                             Text("降噪：" + (spp.denoise.map { $0 ? "开启" : "关闭" } ?? "—"))
                             Text("电源双击降噪：" + spp.denoiseButton).foregroundStyle(.secondary)
                         }
+                        Button("e004 握手测试 · 不改增益") { spp.probeTool() }.disabled(!spp.canProbeTool)
+                        Button("e004 只读版本查询") { spp.probeTool(versionOnly: true) }.disabled(!spp.canProbeTool)
+                        Text(spp.diagnosticServiceStatus).font(.callout).textSelection(.enabled)
                         Text(spp.metrics).font(.system(.callout, design: .monospaced))
                         HStack {
                             Image(systemName: "button.programmable").font(.title2)

@@ -20,9 +20,9 @@ public struct Mini2FirmwareIdentity: Codable, Equatable {
     }
 
     /// Match the specific paired transmitter's address suffix, never the first Mini nearby.
-    public static func matches(advertisedName: String, address: String) -> Bool {
+    public static func matches(advertisedName: String, address: String, model: MiniTransmitterModel = .mini2) -> Bool {
         guard let address = addressKey(address) else { return false }
         let name = advertisedName.uppercased().filter { $0.isLetter || $0.isNumber }
-        return name == "DJIMICMINI2" + address.suffix(6)
+        return name == model.advertisedNamePrefix + address.suffix(6)
     }
 }

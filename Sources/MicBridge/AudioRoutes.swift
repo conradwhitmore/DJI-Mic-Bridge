@@ -9,8 +9,8 @@ final class AudioRoutes {
     private var locked: [AudioObjectPropertySelector: AudioObjectID] = [:]
     private var lockedUIDs: [AudioObjectID: String] = [:]
     private(set) var description = ""
-    private let selectors: [AudioObjectPropertySelector] = [kAudioHardwarePropertyDefaultInputDevice,
-        kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice]
+    // Only the default input is managed; output and alert routes belong to the user.
+    private let selectors: [AudioObjectPropertySelector] = [kAudioHardwarePropertyDefaultInputDevice]
     init(target: String) { self.target = Self.normalized(target) }
     static func normalized(_ s: String) -> String { s.uppercased().filter { $0 != ":" && $0 != "-" } }
     func property(_ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
@@ -83,23 +83,12 @@ final class AudioRoutes {
                 throw StreamError.invalid("Mic 2 正被系统音频使用。请退出录音软件和声音输入电平页，再试。")
             }
         }
-        for selector in selectors {
-            let current = try integer(system, selector)
-            let input = selector == kAudioHardwarePropertyDefaultInputDevice
-            let chosen: AudioObjectID
-            if input { chosen = try preferredInput(all, current: current) }
-            else if try isSafeAlternative(current, input: false) { chosen = current }
-            else {
-                let candidates = try all.filter { try isSafeAlternative($0, input: input) }
-                let candidate = candidates.first(where: { (try? integer($0, kAudioDevicePropertyTransportType)) == kAudioDeviceTransportTypeBuiltIn }) ?? candidates.first
-                guard let candidate else { throw StreamError.invalid("需要一个可用的非 DJI 实体\(input ? "输入" : "输出")设备（内建、USB 等）") }
-                chosen = candidate
-            }
-            lockedUIDs[chosen] = try string(chosen, kAudioDevicePropertyDeviceUID)
-            locked[selector] = chosen
-        }
+        let selector = kAudioHardwarePropertyDefaultInputDevice
+        let chosen = try preferredInput(all, current: integer(system, selector))
+        lockedUIDs[chosen] = try string(chosen, kAudioDevicePropertyDeviceUID)
+        locked[selector] = chosen
         try check(requirePresent: true)
-        description = "系统输入：\(try string(locked[selectors[0]]!, kAudioObjectPropertyName)) · 输出：\(try string(locked[selectors[1]]!, kAudioObjectPropertyName))"
+        description = "系统输入：\(try string(chosen, kAudioObjectPropertyName))"
     }
     func check(requirePresent: Bool, allowTargetAudio: Bool = false, allowDefaultInput: Bool = false) throws {
         // Record the unsafe condition, but still restore every available default.
@@ -127,7 +116,7 @@ final class AudioRoutes {
     func restoreLockedDefaults(allowDefaultInput: Bool = false) throws {
         // Keep the preferred bridge as the actual lock target, including after
         // Bluetooth reconnects. Re-evaluate driver availability without opening
-        // any hardware input; output/alert protection remains independent.
+        // any hardware input. Output and alert routes are never restored.
         var inputSelectionError: Error?
         if !allowDefaultInput {
             do {

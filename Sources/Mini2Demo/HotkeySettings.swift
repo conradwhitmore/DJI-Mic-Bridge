@@ -51,7 +51,7 @@ struct Mini2HotkeyView: View {
     var body: some View {
         GroupBox("SPP 双热键") {
             VStack(alignment: .leading, spacing: 10) {
-                ForEach(Mini2Hotkey.allCases, id: \.rawValue) { key in
+                ForEach([Mini2Hotkey.connection, .powerDouble], id: \.rawValue) { key in
                     HStack(spacing: 12) {
                         Image(systemName: key == .connection ? "link" : "power")
                             .font(.title2).frame(width: 28)

@@ -4,6 +4,7 @@ import ServiceManagement
 import IOBluetooth
 import MicLinkCore
 import MicBridgeSupport
+import Mini2Protocol
 
 private let panel = Color(nsColor: .controlBackgroundColor)
 let bridgeCanvas = Color(nsColor: NSColor(name: nil) { appearance in
@@ -119,6 +120,7 @@ struct ReferenceButtonStyle: ButtonStyle {
                 } else { panel }
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            .contentShape(Rectangle())
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(prominent ? Color.clear : subtle.opacity(0.55)))
             .shadow(color: prominent ? Color.blue.opacity(enabled ? 0.22 : 0.08) : .clear, radius: 7, y: 4)
             .opacity(!enabled && prominent ? 0.4 : configuration.isPressed ? 0.7 : 1)
@@ -242,6 +244,7 @@ struct BridgeWindow: View {
                 Spacer(minLength: 4)
                 Button { openDeviceSettings() } label: {
                     HStack(spacing: 6) { Text("设备高级设置"); Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)) }
+                        .contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }.font(.system(size: 11)).foregroundStyle(.secondary)
     }
@@ -262,13 +265,13 @@ struct BridgeWindow: View {
     private var deviceCard: some View {
         ReferenceCard {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: model.model == .mini2 ? 12 : 20) {
-                    ProductArtwork(model: model.model, size: model.model == .mini2 ? 116 : 96,
-                                   visibleHeight: 136, alignment: model.model == .mini2 ? .center : .top)
+                HStack(spacing: model.model.usesMiniSPP ? 12 : 20) {
+                    ProductArtwork(model: model.model, size: model.model.usesMiniSPP ? 116 : 96,
+                                   visibleHeight: 136, alignment: model.model.usesMiniSPP ? .center : .top)
                         .shadow(color: .black.opacity(0.12), radius: 5, y: 5)
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(model.model == .mini2 ? "Mic Mini 2" : model.model.title)
-                            .font(.system(size: model.model == .mini2 ? 22 : 24, weight: .bold))
+                        Text(model.model.usesMiniSPP ? model.model.title.replacingOccurrences(of: "DJI ", with: "") : model.model.title)
+                            .font(.system(size: model.model.usesMiniSPP ? 22 : 24, weight: .bold))
                             .lineLimit(1).minimumScaleFactor(0.8)
                         HStack(spacing: 6) {
                             Circle().fill(stateColor).frame(width: 6, height: 6)
@@ -333,8 +336,8 @@ struct BridgeWindow: View {
                     HStack(spacing: 8) {
                         Text("降噪模式").font(.system(size: 12, weight: .medium))
                         Spacer(minLength: 4)
-                        if model.model == .mini2 {
-                            Text(model.mini2Denoise.map { $0 ? "开启" : "关闭" } ?? "—")
+                        if model.model.usesMiniSPP {
+                            Text(model.miniAudio.noiseMode?.title ?? "—")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
                         } else if model.denoise.busy {
                             ProgressView().controlSize(.mini)
@@ -361,7 +364,7 @@ struct BridgeWindow: View {
                         Spacer()
                         Text("固件 \(model.firmware)").font(.system(size: 10)).foregroundStyle(.secondary).help(model.firmwareHint)
                         Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(.tertiary)
-                    }.padding(.top, 10)
+                    }.padding(.top, 10).contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }.frame(maxHeight: .infinity, alignment: .top)
         }
@@ -452,24 +455,30 @@ struct BridgeWindow: View {
     }
     var diagnosticsPage: some View {
         VStack(alignment: .leading, spacing: 18) {
-            ReferenceCard {
-                VStack(alignment: .leading, spacing: 18) {
-                    ReferenceHeading(title: "设备信息", symbol: "info.circle", subtitle: "复用当前 SPP 连接查询，保持音频接收。")
-                    HStack(spacing: 8) { ForEach(Array(MicControlCommand.allCases.prefix(3)), id: \.rawValue) { c in Button(c.title) { model.send(c) }.buttonStyle(ReferenceButtonStyle(inset: 12)).disabled(!model.canQuery || model.preview) } }
-                    HStack {
-                        Button(MicControlCommand.battery.title) { model.send(.battery) }
-                            .buttonStyle(ReferenceButtonStyle(inset: 12)).disabled(!model.canQuery || model.preview)
-                        Text(model.controlHealth).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if !model.controlStatus.isEmpty {
-                        Text(model.controlStatus).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            if model.model.usesMiniSPP {
+                MiniAudioSettingsCard(model: model.model, state: model.miniAudio, connected: model.active,
+                    editable: model.canChangeMiniAudio, setNoise: model.setMiniNoise, setTone: model.setMiniTone)
+            }
+            if model.model == .mic2 {
+                ReferenceCard {
+                    VStack(alignment: .leading, spacing: 18) {
+                        ReferenceHeading(title: "设备信息", symbol: "info.circle", subtitle: "复用当前 SPP 连接查询，保持音频接收。")
+                        HStack(spacing: 8) { ForEach(Array(MicControlCommand.allCases.prefix(3)), id: \.rawValue) { c in Button(c.title) { model.send(c) }.buttonStyle(ReferenceButtonStyle(inset: 12)).disabled(!model.canQuery || model.preview) } }
+                        HStack {
+                            Button(MicControlCommand.battery.title) { model.send(.battery) }
+                                .buttonStyle(ReferenceButtonStyle(inset: 12)).disabled(!model.canQuery || model.preview)
+                            Text(model.controlHealth).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if !model.controlStatus.isEmpty {
+                            Text(model.controlStatus).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
             ReferenceCard {
                 VStack(alignment: .leading, spacing: 10) {
                     ReferenceHeading(title: "连接状态", symbol: "link")
-                    Label(model.ready ? "系统音频保护已启用" : "SPP 连接时锁定非 DJI 系统音频", systemImage: "checkmark.shield")
+                    Label(model.ready ? "系统输入保护已启用" : "SPP 连接时管理系统输入", systemImage: "checkmark.shield")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("停止录音会保留 SPP 连接。")
                         .font(.caption).foregroundStyle(.secondary)

@@ -26,6 +26,7 @@ final class SPPController: NSObject, ObservableObject {
     @Published private(set) var captureCount = 0
     @Published private(set) var statusMetrics = "等待普通 SPP 状态包"
     @Published private(set) var channelID: BluetoothRFCOMMChannelID = 0
+    @Published private(set) var diagnosticServiceStatus = "调试服务 e004：尚未查询"
     @Published private(set) var discovering = false
     @Published private(set) var active = false
     @Published private(set) var opened = false
@@ -35,12 +36,14 @@ final class SPPController: NSObject, ObservableObject {
     private var queryDevice: IOBluetoothDevice?
     private var discoveredDevice: String?
     private var probe: SPPProbe?
+    private var toolProbe: ToolSPPProbe?
+    private var diagnosticChannel: BluetoothRFCOMMChannelID = 0
     private var retired: [SPPProbe] = []
     private var discoveryTimer: Timer?
     private let deviceQueue = DispatchQueue(label: "org.micbridge.mini2-demo.paired-devices")
     init(log: DemoLog) { self.log = log; super.init() }
     func refresh() {
-        guard !active, !discovering else { return }
+        guard !active, !discovering, toolProbe?.active != true else { return }
         channelID = 0; discoveredDevice = nil; selected = ""
         discovering = true
         status = "读取已配对设备…"
@@ -60,7 +63,7 @@ final class SPPController: NSObject, ObservableObject {
         }
     }
     func discover() {
-        guard !active, !discovering, let row = devices.first(where: { $0.id == selected }) else { return }
+        guard !active, !discovering, toolProbe?.active != true, let row = devices.first(where: { $0.id == selected }) else { return }
         guard row.device.isConnected() else { status = "请先将所选 Mini 2 连接到 Mac"; return }
         channelID = 0; discoveredDevice = nil; discovering = true; queryDevice = row.device
         log.add("请求 Mini 的 SDP 服务列表", fields: ["device": row.id])
@@ -76,7 +79,26 @@ final class SPPController: NSObject, ObservableObject {
         guard Thread.isMainThread else { DispatchQueue.main.async { [weak self] in self?.sdpQueryComplete(device, status: result) }; return }
         guard let device, device === queryDevice, discovering else { return }
         discovering = false; queryDevice = nil; discoveryTimer?.invalidate()
-        guard result == 0, let service = device.getServiceRecord(for: IOBluetoothSDPUUID(uuid16: 0x1101)) else {
+        guard result == 0 else {
+            status = "SDP 查询失败：\(result)"; log.add(status); return
+        }
+        var summaries: [[String: Any]] = []
+        for uuid: UInt16 in [0x1101, 0x111e, 0xe003, 0xe004] {
+            let service = device.getServiceRecord(for: IOBluetoothSDPUUID(uuid16: uuid))
+            var id: BluetoothRFCOMMChannelID = 0
+            let rc = service?.getRFCOMMChannelID(&id)
+            summaries.append(["uuid": String(format: "%04X", uuid), "found": service != nil,
+                              "channel": Int(id), "channelResult": rc.map { Int($0) } ?? -1])
+            if uuid == 0xe004 {
+                diagnosticChannel = rc == 0 && (1...30).contains(id) ? id : 0
+                diagnosticServiceStatus = service == nil ? "调试服务 e004：未发现" :
+                    (rc == 0 && (1...30).contains(id) ? "调试服务 e004：RFCOMM \(id)" : "调试服务 e004：未返回有效通道")
+            }
+        }
+        log.add("SDP 服务查询完成；未打开任何通道", fields: ["services": summaries,
+            "records": String(describing: device.services)])
+        log.add(diagnosticServiceStatus)
+        guard let service = device.getServiceRecord(for: IOBluetoothSDPUUID(uuid16: 0x1101)) else {
             status = "没有发现 Serial Port 1101 服务（\(result)）"; log.add(status); return
         }
         var channel: BluetoothRFCOMMChannelID = 0
@@ -85,7 +107,14 @@ final class SPPController: NSObject, ObservableObject {
         channelID = channel; discoveredDevice = device.addressString
         status = "发现 SPP · RFCOMM \(channel)"; log.add(status)
     }
-    var canOpen: Bool { !active && !discovering && channelID > 0 && selected == discoveredDevice }
+    var canProbeTool: Bool { !active && diagnosticChannel > 0 && discoveredDevice == selected && toolProbe?.active != true && !discovering }
+    func probeTool(versionOnly: Bool = false) {
+        guard canProbeTool, let row = devices.first(where: { $0.id == selected }), row.device.isConnected() else { return }
+        let tool = ToolSPPProbe(device: row.device, channelID: diagnosticChannel, log: log, versionOnly: versionOnly)
+        tool.update = { [weak self] text in self?.diagnosticServiceStatus = text }
+        toolProbe = tool; tool.start()
+    }
+    var canOpen: Bool { !active && toolProbe?.active != true && !discovering && channelID > 0 && selected == discoveredDevice }
     func open() {
         guard canOpen, let row = devices.first(where: { $0.id == selected }), row.device.isConnected() else { return }
         active = true
@@ -125,8 +154,15 @@ final class SPPController: NSObject, ObservableObject {
         new.start()
     }
     func close(completion: ((Bool) -> Void)? = nil) {
-        guard let probe else { completion?(true); return }
-        probe.stop(completion: completion)
+        toolProbe?.stop { [weak self] ok in
+            guard ok else { completion?(false); return }
+            guard let probe = self?.probe else { completion?(true); return }
+            probe.stop(completion: completion)
+        }
+        if toolProbe == nil {
+            guard let probe else { completion?(true); return }
+            probe.stop(completion: completion)
+        }
     }
     func toggleCapture() { probe?.toggleCapture() }
     func verifyCommands() { probe?.verifyCommands() }

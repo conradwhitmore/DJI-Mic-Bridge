@@ -100,14 +100,26 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
         return try? JSONDecoder().decode(Mini2FirmwareIdentity.self, from: data)
     }
     var firmwareHint: String {
-        if model == .mini2, let cached = cachedMini2Firmware(selectedID) {
+        if model.usesMiniSPP, let cached = cachedMini2Firmware(selectedID) {
             return "BLE 读取并缓存于 \(cached.readAt.formatted(date: .abbreviated, time: .shortened))"
         }
         return "设备固件版本"
     }
     private var controlFirmwareSupported = false
-    @Published private(set) var mini2Denoise: Bool?
-    var hotkeyActive: Bool { model == .mini2 ? hotkeyEnabled && phase == .streaming : keyMode.enabled == true }
+    @Published private(set) var miniAudio = MiniAudioSettings.ViewState()
+    var canChangeMiniAudio: Bool {
+        !preview && model.usesMiniSPP && phase == .streaming && miniAudio.ready && !miniAudio.busy
+            && !exitPending && !closing && !terminating && session?.canQuery == true
+    }
+    func setMiniNoise(_ mode: MiniNoiseMode) {
+        guard canChangeMiniAudio else { return }
+        session?.setMiniNoise(mode)
+    }
+    func setMiniTone(_ tone: MiniVoiceTone) {
+        guard canChangeMiniAudio, model == .mini2 else { return }
+        session?.setMiniTone(tone)
+    }
+    var hotkeyActive: Bool { model.usesMiniSPP ? hotkeyEnabled && phase == .streaming : keyMode.enabled == true }
     @Published private(set) var denoise = Mic2DenoiseState()
     @Published private(set) var keyMode = Mic2KeyModeState()
     @Published private(set) var hotkeyEnabled = true
@@ -117,13 +129,13 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
     private var buttonExitAttempted = false
     private var buttonExitDeadline: TimeInterval = 0
     private var acknowledgedExitStarted = false
-    private var controlsBusy: Bool { denoise.busy || keyMode.busy }
+    private var controlsBusy: Bool { denoise.busy || keyMode.busy || miniAudio.busy }
     var canChangeHotkey: Bool {
         !preview && selected?.model.adapter != nil && !exitPending && !closing && !terminating
-            && !controlsBusy && (model == .mini2 || session == nil || controlFirmwareSupported)
+            && !controlsBusy && (model.usesMiniSPP || session == nil || controlFirmwareSupported)
     }
     var hotkeyStatus: String {
-        if model == .mini2 { return hotkeyEnabled ? "连接键单击 / 电源键双击 · 保留原按键功能" : "快捷键发送已暂停" }
+        if model.usesMiniSPP { return hotkeyEnabled ? "连接键单击 / 电源键\(model.miniPowerGesture) · 保留原按键功能" : "快捷键发送已暂停" }
         if let error = keyMode.error { return error }
         if keyMode.busy { return "正在切换…" }
         if keyMode.enabled == true { return "短按触发快捷键 · 长按电源仍可关机" }
@@ -459,7 +471,7 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
         selectedID = id; watchedDevice = selected?.device; watchedHandle = nil; autoPolicy.linkDisconnected()
         bluetoothConnected = watchedDevice?.isConnected() == true
         defaults.set(id, forKey: "selectedDevice")
-        firmware = (model == .mini2 ? cachedMini2Firmware(id)?.version : firmwareByAddress[id]) ?? "-"
+        firmware = (model.usesMiniSPP ? cachedMini2Firmware(id)?.version : firmwareByAddress[id]) ?? "-"
         if changedDevice && !preview {
             hfpTestFile = nil; hfpTestStatus = ""
             audioInputAvailable = false; audioActivity = false; hfpEndpointAvailable = false; audioObservationError = nil
@@ -545,9 +557,9 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
     func connect() {
         guard canConnect, let selected, selected.model.adapter != nil else { return }
         guard !demoRunning else { status = "请先退出 Demo，再由 MicBridge 连接 SPP。"; return }
-        if selected.model == .mini2, cachedMini2Firmware(selected.id) == nil,
+        if selected.model.usesMiniSPP, cachedMini2Firmware(selected.id) == nil,
            mini2FirmwareAttempts.insert(selected.id).inserted {
-            mini2FirmwareReader.read(address: selected.id) { [weak self] identity in
+            mini2FirmwareReader.read(address: selected.id, model: selected.model == .mini ? .mini : .mini2) { [weak self] identity in
                 guard let self else { return }
                 if let identity, let key = self.mini2FirmwareCacheKey(selected.id),
                    let data = try? JSONEncoder().encode(identity) {
@@ -561,7 +573,8 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
         }
         exitPolicy = SPPExitPolicy(); exitPending = false; exitConfirmed = false; exitStatus = ""; versionQueryAttempted = false
         controlFirmwareSupported = false
-        mini2Denoise = nil; denoise = Mic2DenoiseState(); denoiseReadAttempted = false
+        miniAudio = MiniAudioSettings.ViewState()
+        denoise = Mic2DenoiseState(); denoiseReadAttempted = false
         keyMode = Mic2KeyModeState(); keyModeAttempted = false
         localClosePending = false; buttonExitAttempted = false; acknowledgedExitStarted = false
         resumePolicy.begin(target: selected.id)
@@ -589,9 +602,12 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
                 guard let self, let connection, self.session === connection else { return }
                 self.sppBatteryReceived = true; self.batteryPercent = percent
             }
+            connection.miniAudioUpdate = { [weak self, weak connection] state in
+                guard let self, let connection, self.session === connection else { return }
+                if self.miniAudio != state { self.miniAudio = state }
+            }
             connection.mini2Status = { [weak self, weak connection] status in
                 guard let self, let connection, self.session === connection else { return }
-                if self.mini2Denoise != status.denoise { self.mini2Denoise = status.denoise }
                 self.sppBatteryReceived = true
                 let level = status.batteryLevel
                 if self.mini2BatteryLevel != level { self.mini2BatteryLevel = level }
@@ -660,7 +676,8 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
                 guard let self, self.session === ended else { return }
                 let exitWasAcknowledged = self.exitPolicy.closeAuthorized
                 self.controlFirmwareSupported = false
-                self.mini2Denoise = nil; self.denoise = Mic2DenoiseState(); self.keyMode = Mic2KeyModeState(); self.localClosePending = false
+                self.miniAudio = MiniAudioSettings.ViewState()
+                self.denoise = Mic2DenoiseState(); self.keyMode = Mic2KeyModeState(); self.localClosePending = false
                 self.session = nil; self.exitPending = false; self.exitPolicy = SPPExitPolicy()
                 self.sppBatteryReceived = false; self.batteryPercent = nil; self.mini2BatteryLevel = nil; self.nextBatteryRead = 0
                 if exitWasAcknowledged {
@@ -699,6 +716,7 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
         sync()
     }
     private func prepareButtonExit() {
+        session?.cancelMiniAudioSettings()
         // Drop unsent work. Any in-flight command completes before keyTestOff.
         denoise = Mic2DenoiseState(); keyMode = Mic2KeyModeState()
         buttonExitAttempted = false; buttonExitDeadline = uptime + 30

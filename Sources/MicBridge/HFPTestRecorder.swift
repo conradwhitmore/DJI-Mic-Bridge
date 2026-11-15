@@ -137,18 +137,7 @@ final class HFPTestRecorder {
 /// Used only for explicit HFP-test playback, never when a capture or SPP session is active.
 func prepareHFPTestPlaybackOutput() throws -> String {
     let reader = AudioRoutes(target: "DJI")
-    let outputs = try reader.devices().filter {
-        try !reader.isDJI($0) && reader.hasStream($0, input: false) && reader.integer($0, kAudioDevicePropertyDeviceIsAlive) == 1
-    }
-    let airpods = try outputs.first { try reader.string($0, kAudioObjectPropertyName).localizedCaseInsensitiveContains("AirPods") && reader.integer($0, kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeBluetooth }
-    let speakers = try outputs.first { try reader.integer($0, kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeBuiltIn }
-    guard var output = airpods ?? speakers else { throw StreamError.invalid("请连接 AirPods 或启用 Mac 扬声器后试听") }
-    var property = reader.property(kAudioHardwarePropertyDefaultOutputDevice)
-    let current = try reader.integer(reader.system, kAudioHardwarePropertyDefaultOutputDevice)
-    if current != output {
-        let status = AudioObjectSetPropertyData(reader.system, &property, 0, nil, UInt32(MemoryLayout<AudioObjectID>.size), &output)
-        guard status == noErr else { throw StreamError.invalid("无法选择安全的试听输出（\(status)）") }
-    }
     try AudioRoutes.checkPlaybackOutput()
+    let output = try reader.integer(reader.system, kAudioHardwarePropertyDefaultOutputDevice)
     return try reader.string(output, kAudioObjectPropertyName)
 }

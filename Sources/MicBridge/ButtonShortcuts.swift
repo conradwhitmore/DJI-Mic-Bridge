@@ -49,7 +49,7 @@ final class ButtonShortcuts: ObservableObject {
         dispatch(event.button, name: event.button.shortcutTitle + "短按")
     }
     func receive(_ event: Mini2Hotkey, active: Bool) {
-        // Already validated once per complete Mini 2 status snapshot; no Mic 2 sequence gate.
+        // Already validated once per complete Mini-family status snapshot; no Mic 2 sequence gate.
         guard !preview, active else { return }
         dispatch(event == .connection ? .link : .power, name: event.title)
     }
@@ -116,9 +116,9 @@ struct ButtonShortcutSettingsView: View {
 
 struct ButtonMappingPanel: View {
     let model: MicModel
-    private var buttons: [MicButton] { model == .mini2 ? [.link, .power] : [.link, .power, .record] }
+    private var buttons: [MicButton] { model.usesMiniSPP ? [.link, .power] : [.link, .power, .record] }
     private func title(_ button: MicButton) -> String {
-        model == .mini2 ? (button == .link ? "连接键单击" : "电源键双击") : button.shortcutTitle
+        model.usesMiniSPP ? (button == .link ? "连接键单击" : "电源键\(model.miniPowerGesture)") : button.shortcutTitle
     }
     @ObservedObject var shortcuts: ButtonShortcuts
     let available: Bool
@@ -142,7 +142,7 @@ struct ButtonMappingPanel: View {
                     .frame(width: 40, height: 40).background(Color.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
                 VStack(alignment: .leading, spacing: 7) {
                     Text("麦克风按键映射").font(.system(size: 19, weight: .bold))
-                    Text(model == .mini2 ? "连接键单击与电源键双击触发快捷键；双击仍切换降噪" : "启用后，短按仅触发快捷键，不再执行连接、降噪或录音操作").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                    Text(model.usesMiniSPP ? "连接键单击与电源键\(model.miniPowerGesture)触发快捷键；后者仍切换降噪" : "启用后，短按仅触发快捷键，不再执行连接、降噪或录音操作").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer(minLength: 0)
                 HStack(spacing: 8) {
@@ -150,7 +150,7 @@ struct ButtonMappingPanel: View {
                     Text("启用映射").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
                     Toggle("启用映射", isOn: Binding(get: { hotkeyEnabled }, set: setHotkey))
                         .labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(!canChangeMode)
-                        .help(model == .mini2 ? "只启用或暂停快捷键发送，保留原按键功能" : "启用后短按仅触发快捷键，关闭后恢复原按键功能")
+                        .help(model.usesMiniSPP ? "只启用或暂停快捷键发送，保留原按键功能" : "启用后短按仅触发快捷键，关闭后恢复原按键功能")
                 }.fixedSize().padding(.top, 2)
             }.padding(.bottom, 20)
             HStack {

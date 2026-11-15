@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import MicBridgeSupport
+import Mini2Protocol
 
 /// Own-view rendering only; no screen capture, Bluetooth, audio I/O, or login registration.
 func renderDesignSnapshots(to directory: URL) throws {
@@ -19,6 +20,18 @@ func renderDesignSnapshots(to directory: URL) throws {
         view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let data = bitmap.representation(using: .png, properties: [:]) else { throw NSError(domain: "MicBridge.Snapshot", code: 2) }
         try data.write(to: directory.appendingPathComponent(name + ".png"))
+    }
+    for profile in [MicModel.mini, .mini2] {
+        var state = MiniAudioSettings.ViewState()
+        state.ready = true; state.noiseMode = .strong; state.tone = profile == .mini2 ? .rich : nil
+        for dark in [false, true] {
+            for width: CGFloat in [360, 520] {
+                try save(MiniAudioSettingsCard(model: profile, state: state, connected: true, editable: true,
+                    setNoise: { _ in }, setTone: { _ in }).padding(18).background(bridgeCanvas),
+                    name: "audio-settings-\(profile.rawValue)-\(Int(width))-\(dark ? "dark" : "light")",
+                    width: width, height: profile == .mini2 ? 230 : 180, dark: dark)
+            }
+        }
     }
     for dark in [false, true] {
         let tone = dark ? "dark" : "light"

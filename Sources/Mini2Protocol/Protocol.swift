@@ -3,11 +3,13 @@ import MicLinkCore
 
 /// Mini 2 02.03.17.00 candidates. These are raw DUML for BLE, NOT Mic 2 SPP packets.
 public enum Mini2Command: String {
-    case version, battery, keyEnter, keyExit
+    case version, battery, keyEnter, keyExit, gainRead, audioModeRead, gainProbeOne, gainRestoreZero
     public var code: (UInt8, UInt8) {
         switch self {
         case .version: return (0, 1)
         case .battery: return (5, 6)
+        case .gainRead, .audioModeRead: return (0x5b, 2)
+        case .gainProbeOne, .gainRestoreZero: return (0x5b, 1)
         case .keyEnter, .keyExit: return (4, 0x68)
         }
     }
@@ -16,6 +18,10 @@ public enum Mini2Command: String {
         case .version, .battery: return []
         case .keyEnter: return [0x43, 1, 0]
         case .keyExit: return [0x43, 1, 8]
+        case .gainRead: return [0, 0, 5, 0, 0]
+        case .audioModeRead: return [0, 0, 0x1c, 0, 0]
+        case .gainProbeOne: return [0, 0, 5, 0, 1, 1]
+        case .gainRestoreZero: return [0, 0, 5, 0, 1, 0]
         }
     }
 }
@@ -72,6 +78,13 @@ public struct Mini2Request {
             guard p.count == 30, p[0] == 0 else { throw StreamError.invalid("版本回应格式不符：\(p.hex)") }
         case .battery:
             guard p.count == 40, p[0] <= 100 else { throw StreamError.invalid("电量回应格式不符：\(p.hex)") }
+        case .gainRead, .audioModeRead:
+            let tag: UInt8 = command == .gainRead ? 5 : 0x1c
+            guard p.count == 7, Array(p.prefix(6)) == [0, 0, 0, tag, 0, 1] else {
+                throw StreamError.invalid("配置回读格式不符：\(p.hex)")
+            }
+        case .gainProbeOne, .gainRestoreZero:
+            guard p == [0] else { throw StreamError.invalid("增益设置 ACK 未确认：\(p.hex)") }
         case .keyEnter, .keyExit:
             guard p == [0] + command.payload else { throw StreamError.invalid("按键模式回应未确认：\(p.hex)") }
         }

@@ -5,10 +5,11 @@ import Foundation
 public struct Mini2SPPStream {
     private var framing = Mini2SPPParser()
     private var status = Mini2StatusParser()
-    private var hotkeys = Mini2SPPHotkeys()
+    private var hotkeys: Mini2SPPHotkeys
     public private(set) var statusCount = 0
     public var sequenceGaps: Int { status.sequenceGaps }
-    public init() {}
+    public init(model: MiniTransmitterModel = .mini2) { hotkeys = Mini2SPPHotkeys(model: model) }
+    public mutating func softwareDenoiseWrite(at time: TimeInterval) { hotkeys.softwareDenoiseWrite(at: time) }
     public struct Batch {
         public var audio: [Data] = []
         public var statuses: [Mini2SPPStatus] = []

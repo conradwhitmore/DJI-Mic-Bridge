@@ -1,6 +1,6 @@
 --- a/MicSession.swift
 +++ b/MicSession.swift
-@@ -1,8 +1,15 @@
+@@ -1,8 +1,17 @@
  import Foundation
  import IOBluetooth
  import MicLinkCore
@@ -9,14 +9,16 @@
 
  final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
 +    let model: MicModel
-+    private var mini2Stream = Mini2SPPStream()
++    private var mini2Stream: Mini2SPPStream
++    private var miniAudioSettings: MiniAudioSettings
++    var miniAudioUpdate: ((MiniAudioSettings.ViewState) -> Void)?
 +    private var sdpPending = false
 +    var mini2Hotkey: ((Mini2Hotkey) -> Void)?
 +    var mini2Status: ((Mini2SPPStatus) -> Void)?
      let device: IOBluetoothDevice
      let eventLog: URL
      let connectionID = UUID().uuidString
-@@ -12,13 +19,18 @@
+@@ -12,13 +21,18 @@
      var recordingComplete: ((URL?, String) -> Void)?
      var unexpectedStop: (() -> Void)?
      var audioSamples: (([Float]) -> Void)?
@@ -39,13 +41,13 @@
      var beforeReconnectDeletion: (() throws -> Void)?
      private var query: MicControlQuery?, queryDeadline: TimeInterval?
      private var queryChannel: IOBluetoothRFCOMMChannel?
-@@ -27,9 +39,11 @@
+@@ -27,9 +41,11 @@
      private var pendingWrite: UnsafeMutableRawPointer?
      private var statusRouteSeen = false
      private(set) var reconnectDeleteSent = false
 -    var canQuery: Bool { canRecord && statusRouteSeen && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
-+    var canQuery: Bool { canRecord && (model == .mini2 || statusRouteSeen) && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
-+    var controlIdle: Bool { query == nil && pendingWrite == nil }
++    var canQuery: Bool { canRecord && (model.usesMiniSPP || statusRouteSeen) && query == nil && pendingWrite == nil && commandBuffers.count < 32 && !miniAudioSettings.busy }
++    var controlIdle: Bool { query == nil && pendingWrite == nil && !miniAudioSettings.busy }
 +    var canRecoverKeyTest: Bool { canRecord && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
      private var buttonEvents: [MicButtonEvent] = []
 -    private let parser = FrameParser(), buttons = MicButtonDetector()
@@ -53,7 +55,7 @@
      private let decoder: LC3Decoder
      private let recorder = RecordingSegments()
      private var recordingStarted: TimeInterval?
-@@ -87,8 +101,9 @@
+@@ -87,8 +103,11 @@
              self.record("shutdown_outcome", ["outcome": String(describing: result)])
          })
 
@@ -61,11 +63,13 @@
 -        self.device = device; self.eventLog = eventLog
 +    init(device: IOBluetoothDevice, model: MicModel, eventLog: URL) throws {
 +        guard model.adapter != nil else { throw StreamError.invalid("不支持此设备") }
++        self.miniAudioSettings = MiniAudioSettings(model: model == .mini ? .mini : .mini2)
++        self.mini2Stream = Mini2SPPStream(model: model == .mini ? .mini : .mini2)
 +        self.model = model; self.device = device; self.eventLog = eventLog
          guard let address = device.addressString else { throw StreamError.invalid("设备没有蓝牙地址") }
          routes = AudioRoutes(target: address)
          decoder = try LC3Decoder()
-@@ -110,8 +125,9 @@
+@@ -110,8 +129,9 @@
          }
      }
      func start() throws {
@@ -76,7 +80,7 @@
          linkHandle = device.connectionHandle
          created = now
          update?("准备 SPP · \(routes.description)", 0, 0, 0)
-@@ -120,19 +136,39 @@
+@@ -120,19 +140,39 @@
              guard let self, !self.stopping else { return }
              do { try self.routes.check(requirePresent: true) }
              catch { self.stop(error.localizedDescription); return }
@@ -90,7 +94,7 @@
 -                self.shutdown.openingRequestFailed()
 -                self.stop("SPP 打开请求失败：\(status)")
 -            }
-+            if self.model == .mini2 {
++            if self.model.usesMiniSPP {
 +                self.sdpPending = true
 +                self.record("sdp_requested")
 +                let status = self.device.performSDPQuery(self)
@@ -102,7 +106,7 @@
 +    }
 +    @objc func sdpQueryComplete(_ device: IOBluetoothDevice!, status: IOReturn) {
 +        guard Thread.isMainThread else { DispatchQueue.main.async { [weak self] in self?.sdpQueryComplete(device, status: status) }; return }
-+        guard !stopping, !retired, openedAt == nil, sdpPending, model == .mini2, device === self.device else { return }
++        guard !stopping, !retired, openedAt == nil, sdpPending, model.usesMiniSPP, device === self.device else { return }
 +        sdpPending = false
 +        guard status == 0, let service = device.getServiceRecord(for: IOBluetoothSDPUUID(uuid16: 0x1101)) else {
 +            stop("未找到 SPP 服务：\(status)"); return
@@ -126,7 +130,16 @@
      }
      private func ensureTimer() {
          guard timer == nil else { return }
-@@ -190,6 +226,11 @@
+@@ -153,6 +193,8 @@
+     }
+     private func tick() {
+         guard !retired else { return }
++        miniAudioSettings.expire(at: now)
++        if model.usesMiniSPP { miniAudioUpdate?(miniAudioSettings.view(at: now)) }
+         if let deadline = queryDeadline, now >= deadline {
+             finishQuery("指令应答超时；SPP 保持连接", kind: "control_timeout")
+         }
+@@ -190,6 +232,11 @@
          do { try routes.check(requirePresent: true) } catch { stop(error.localizedDescription); return }
  #endif
          if let openedAt {
@@ -138,18 +151,52 @@
              if let recordingStarted, now - recordingStarted >= recordingDuration {
                  stopRecording("定时录音完成")
              }
-@@ -212,6 +253,10 @@
+@@ -211,7 +258,44 @@
+                                      "stream_frame_offset": frames])
          update?("正在保存录音 · SPP 保持连接", 0, level, presses)
      }
++    func setMiniNoise(_ mode: MiniNoiseMode) {
++        guard model.usesMiniSPP, canQuery, miniAudioSettings.requestNoise(mode, at: now) else { return }
++        driveMiniAudioSettings()
++    }
++    func setMiniTone(_ tone: MiniVoiceTone) {
++        guard model == .mini2, canQuery, miniAudioSettings.requestTone(tone, at: now) else { return }
++        driveMiniAudioSettings()
++    }
++    func cancelMiniAudioSettings() {
++        miniAudioSettings.cancel()
++        miniAudioUpdate?(miniAudioSettings.view(at: now))
++    }
++    private func driveMiniAudioSettings() {
++        guard model.usesMiniSPP, canRecord, !stopping, !retired, !reconnectDeleteSent,
++              query == nil, pendingWrite == nil, commandBuffers.count < 32,
++              let channel = queryChannel, channel.isOpen() else { return }
++        defer { miniAudioUpdate?(miniAudioSettings.view(at: now)) }
++        guard let command = miniAudioSettings.nextCommand(at: now) else { return }
++        do { try routes.check(requirePresent: true) }
++        catch { miniAudioSettings.fail(error.localizedDescription); return }
++        let bytes = command.packet
++        guard bytes.count <= Int(channel.getMTU()) else { miniAudioSettings.fail("设置指令超过通道 MTU"); return }
++        // Suppress only the power-state proxy; connection-key capture remains active.
++        if case .tone = command {} else { mini2Stream.softwareDenoiseWrite(at: now) }
++        let data = NSMutableData(data: Data(bytes))
++        commandBuffers.append(data); pendingWrite = data.mutableBytes
++        record("mini_audio_setting", ["setting": String(describing: command)])
++        let result = channel.writeAsync(data.mutableBytes, length: UInt16(bytes.count), refcon: data.mutableBytes)
++        if result != 0 {
++            commandBuffers.removeAll { $0 === data }; pendingWrite = nil
++            miniAudioSettings.writeCompleted(success: false)
++        }
++    }
      func sendQuery(_ command: MicControlCommand, configuration: Mic2AudioConfiguration? = nil) throws {
-+        // Mini 2 ordinary SPP never receives Mic 2 configuration or factory commands.
-+        guard model != .mini2 || command == .deleteSPPReconnect else {
-+            throw StreamError.invalid("Mini 2 的普通 SPP 不支持此查询")
++        // Mini-family ordinary SPP never receives Mic 2 configuration or factory commands.
++        guard !model.usesMiniSPP || command == .deleteSPPReconnect else {
++            throw StreamError.invalid("Mini 系列的普通 SPP 不支持此查询")
 +        }
          guard (command == .keyTestOff ? canRecoverKeyTest : canQuery), let channel = queryChannel, channel.isOpen() else {
              throw StreamError.invalid("请等待 SPP 状态就绪和上一条指令完成")
          }
-@@ -237,7 +282,7 @@
+@@ -237,7 +321,7 @@
              record("control_auto_reconnect_disabled", ["command": command.rawValue, "persisted": true])
          }
          let data = NSMutableData(data: Data(bytes))
@@ -158,7 +205,7 @@
          pendingWrite = data.mutableBytes
          if command == .keyTestOn { keyTestMayBeActive = true }
          if command == .deleteSPPReconnect { reconnectDeleteSent = true }
-@@ -259,6 +304,8 @@
+@@ -259,6 +343,8 @@
          if request.command == .keyTestOff, payload != nil { keyTestMayBeActive = false }
          query = nil; queryDeadline = nil
          controlUpdate?(message)
@@ -167,7 +214,7 @@
          let result: Result<[UInt8], Error> = payload.map { .success($0) } ?? .failure(StreamError.invalid(message))
          // Defer follow-up commands until the receive parser has returned.
          let callback = queryCompleted
-@@ -269,6 +316,9 @@
+@@ -269,8 +355,15 @@
              DispatchQueue.main.async { [weak self] in self?.rfcommChannelWriteComplete(channel, refcon: refcon, status: error) }; return
          }
          guard !retired, let refcon, refcon == pendingWrite, channel === queryChannel else { return }
@@ -176,8 +223,14 @@
 +        commandBuffers.removeAll { $0.mutableBytes == refcon }
          pendingWrite = nil
          record("control_write_completed", ["status": Int(error)])
++        if miniAudioSettings.busy {
++            miniAudioSettings.writeCompleted(success: error == 0)
++            miniAudioUpdate?(miniAudioSettings.view(at: now))
++        }
          if error != 0 { finishQuery("指令写入失败：\(error)；SPP 保持连接", kind: "control_write_failed") }
-@@ -315,7 +365,7 @@
+     }
+     func stopRecording(_ reason: String = "录音已保存") {
+@@ -315,7 +408,7 @@
          closeNotifications.removeAll()
          for channel in channels.values { _ = channel.setDelegate(nil) }
          channels.removeAll()
@@ -186,7 +239,7 @@
          var routeFailed = false
          do { try routes.restoreLockedDefaults() }
          catch { routeFailed = true; message += "；路由恢复失败：\(error.localizedDescription)" }
-@@ -325,6 +375,33 @@
+@@ -325,8 +418,36 @@
          let callback = complete; complete = nil
          callback?(self, message, routeFailed)
      }
@@ -219,8 +272,11 @@
 +    // END MICBRIDGE ACK EXIT
      func stop(_ reason: String = "已断开") {
          guard !stopping, !retired else { return }
++        cancelMiniAudioSettings()
          finishQuery("SPP 正在关闭，未完成指令不自动重发", kind: "control_cancelled")
-@@ -354,8 +431,8 @@
+ #if HFP_DIAGNOSTIC
+         endHFPDiagnostic("session_stop: \(reason)")
+@@ -354,8 +475,8 @@
          // On timeout the App retains this session and its delegate, so a late-open
          // callback can still request bounded cleanup. No new capture is allowed.
          var message = finalReason
@@ -231,7 +287,7 @@
          if let routeFailure { message += "；音频收尾检查异常：\(routeFailure)" }
          record("connection_finished", ["recovery_required": unconfirmed || routeFailure != nil])
          let callback = complete; complete = nil
-@@ -380,6 +457,7 @@
+@@ -380,6 +501,7 @@
          guard openNow else { stop("SPP 打开回调到达时通道已不在打开状态，需确认关闭"); return }
          guard openedAt == nil else { stop("意外重复打开"); return }
          openedAt = now
@@ -239,11 +295,11 @@
          queryChannel = opened
      }
      func rfcommChannelData(_ source: IOBluetoothRFCOMMChannel!, data pointer: UnsafeMutableRawPointer!, length count: Int) {
-@@ -393,9 +471,16 @@
+@@ -393,9 +515,16 @@
      }
      private func receive(_ bytes: Data) {
          guard !stopping, openedAt != nil else { return }
-+        if model == .mini2 { receiveMini2(bytes); return }
++        if model.usesMiniSPP { receiveMini2(bytes); return }
          do {
              var receivedPCM: [Float] = []
 -            for envelope in try parser.feed(bytes) {
@@ -257,7 +313,7 @@
                  for packet in envelope.audio {
                      let pcm = try decoder.decode(packet)
                      level = pcm.map(abs).max() ?? 0
-@@ -416,12 +501,23 @@
+@@ -416,12 +545,23 @@
                      if let event = MicKeyTestEvent(frame: c), event.sequence != lastKeyTestSequence {
                          lastKeyTestSequence = event.sequence
                          record("key_test_event", ["button": event.button.rawValue, "sequence": event.sequence])
@@ -282,7 +338,7 @@
                                  finishQuery(request.summary(payload) + "；SPP 保持连接", kind: "control_reply",
                                              fields: ["control_hex": c.map { String(format: "%02x", $0) }.joined()], payload: payload)
                              }
-@@ -431,13 +527,49 @@
+@@ -431,13 +571,57 @@
                          }
                      }
                      for event in buttons.observe(c, time: Date().timeIntervalSince1970) {
@@ -301,14 +357,22 @@
 +    private func receiveMini2(_ bytes: Data) {
 +        let batch = mini2Stream.feed(bytes, at: now)
 +        statusFramesReceived = mini2Stream.statusCount
-+        for status in batch.statuses { mini2Status?(status) }
++        for status in batch.statuses {
++            miniAudioSettings.observe(status, at: now)
++            mini2Status?(status)
++        }
++        miniAudioUpdate?(miniAudioSettings.view(at: now))
++        // Follow-up writes run after the current receive callback, never inside the parser.
++        if miniAudioSettings.busy {
++            DispatchQueue.main.async { [weak self] in self?.driveMiniAudioSettings() }
++        }
 +        for event in batch.events {
 +            if event == .connection { presses += 1 }
-+            record("mini2_hotkey", ["button": event.rawValue,
++            record(model.rawValue + "_hotkey", ["button": event.rawValue,
 +                "source": event == .connection ? "capture" : "denoise_state_change"])
 +            if isRecording {
 +                buttonEvents.append(MicButtonEvent(button: event == .connection ? .link : .power,
-+                    time: Date().timeIntervalSince1970, source: event == .connection ? "mini2_capture" : "mini2_denoise_state_change"))
++                    time: Date().timeIntervalSince1970, source: model.rawValue + (event == .connection ? "_capture" : "_denoise_state_change")))
 +            }
 +            mini2Hotkey?(event)
 +        }

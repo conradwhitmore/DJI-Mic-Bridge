@@ -14,9 +14,11 @@ public enum MicModel: String, CaseIterable, Identifiable {
         }
     }
     public var imageName: String? { self == .unknown ? nil : rawValue }
-    /// Each supported model uses its own verified transport/status layout.
+    public var usesMiniSPP: Bool { self == .mini || self == .mini2 }
+    public var miniPowerGesture: String { self == .mini ? "单击" : "双击" }
+    /// Mini generations share a firmware-derived transport/status layout.
     public var adapter: MicAdapter? {
-        switch self { case .mic2: return .mic2SPP; case .mini2: return .mini2SPP; default: return nil }
+        switch self { case .mic2: return .mic2SPP; case .mini, .mini2: return .mini2SPP; default: return nil }
     }
     public var compatibility: String { adapter == nil ? "暂不支持连接与指令" : "支持 SPP 收音、录音与按键监听" }
     public static func identify(_ name: String) -> MicModel {

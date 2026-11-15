@@ -15,14 +15,15 @@ final class Mini2FirmwareReader: NSObject, CBCentralManagerDelegate, CBPeriphera
     private var result: Mini2FirmwareIdentity?
     private var completion: ((Mini2FirmwareIdentity?) -> Void)?
     private var address = ""
+    private var model: MiniTransmitterModel = .mini2
     private var deadline: TimeInterval = 0
     private var closing = false
     private var timer: Timer?
     private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
-    func read(address: String, completion: @escaping (Mini2FirmwareIdentity?) -> Void) {
+    func read(address: String, model: MiniTransmitterModel = .mini2, completion: @escaping (Mini2FirmwareIdentity?) -> Void) {
         guard !busy else { return }
-        self.address = address; self.completion = completion
+        self.model = model; self.address = address; self.completion = completion
         busy = true; closing = false; result = nil; request = nil
         parser = Mini2DUMLParser(); deadline = now + 12
         changed?(true, "首次连接，正在读取固件版本…")
@@ -82,7 +83,7 @@ final class Mini2FirmwareReader: NSObject, CBCentralManagerDelegate, CBPeriphera
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
         guard central === self.central, busy, !closing, peripheral == nil else { return }
         let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? p.name ?? ""
-        guard Mini2FirmwareIdentity.matches(advertisedName: name, address: address) else { return }
+        guard Mini2FirmwareIdentity.matches(advertisedName: name, address: address, model: model) else { return }
         central.stopScan(); peripheral = p; p.delegate = self; central.connect(p)
     }
 

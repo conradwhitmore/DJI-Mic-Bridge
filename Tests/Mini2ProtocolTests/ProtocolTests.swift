@@ -47,6 +47,33 @@ final class Mini2ProtocolTests: XCTestCase {
         bad = b; bad[9] ^= 0x40; XCTAssertNil(mini2AudioPayload(Data(bad)))
         XCTAssertNil(mini2AudioPayload(Data(b.dropLast())))
     }
+    func testBLEGainAndModeQueriesRequireMatchingTagAndLength() throws {
+        for (command, tag) in [(Mini2Command.gainRead, UInt8(5)), (.audioModeRead, UInt8(0x1c))] {
+            let request = Mini2Request(command, sequence: 42)
+            let packet = try XCTUnwrap(Mini2Frame(request.packet))
+            XCTAssertEqual(packet.commandSet, 0x5b)
+            XCTAssertEqual(packet.commandID, 2)
+            XCTAssertEqual(packet.payload, [0, 0, tag, 0, 0])
+            let good: [UInt8] = [0, 0, 0, tag, 0, 1, 2]
+            XCTAssertEqual(try request.validate(XCTUnwrap(Mini2Frame(frame(set: 0x5b, id: 2, payload: good)))), good)
+            for bad in [[UInt8(0)], [0xff], [0, 0, 0, tag, 0, 2, 2], [0, 0, 0, tag ^ 1, 0, 1, 2], good + [0]] {
+                XCTAssertThrowsError(try request.validate(XCTUnwrap(Mini2Frame(frame(set: 0x5b, id: 2, payload: bad)))))
+            }
+        }
+    }
+    func testBLEGainProbeOnlyUsesZeroAndOneAndMatchingACK() throws {
+        for (command, value) in [(Mini2Command.gainProbeOne, UInt8(1)), (.gainRestoreZero, UInt8(0))] {
+            let request = Mini2Request(command, sequence: 42)
+            let packet = try XCTUnwrap(Mini2Frame(request.packet))
+            XCTAssertEqual(packet.commandSet, 0x5b); XCTAssertEqual(packet.commandID, 1)
+            XCTAssertEqual(packet.payload, [0, 0, 5, 0, 1, value])
+            XCTAssertEqual(try request.validate(XCTUnwrap(Mini2Frame(frame(set: 0x5b, id: 1, payload: [0])))), [0])
+            for bad in [[UInt8(1)], [], [0, 0]] {
+                XCTAssertThrowsError(try request.validate(XCTUnwrap(Mini2Frame(frame(set: 0x5b, id: 1, payload: bad)))))
+            }
+            XCTAssertThrowsError(try request.validate(XCTUnwrap(Mini2Frame(frame(set: 0x5b, id: 1, payload: [0], sequence: 43)))))
+        }
+    }
     private func frame(set: UInt8 = 4, id: UInt8 = 0x68, payload: [UInt8], sequence: UInt16 = 42,
                        source: UInt8 = 0x3a, destination: UInt8 = 2, flags: UInt8 = 0x80) -> [UInt8] {
         let count = 13 + payload.count
