@@ -1,6 +1,6 @@
 --- a/MicSession.swift
 +++ b/MicSession.swift
-@@ -1,8 +1,17 @@
+@@ -1,8 +1,39 @@
  import Foundation
  import IOBluetooth
  import MicLinkCore
@@ -12,13 +12,35 @@
 +    private var mini2Stream: Mini2SPPStream
 +    private var miniAudioSettings: MiniAudioSettings
 +    var miniAudioUpdate: ((MiniAudioSettings.ViewState) -> Void)?
++    private(set) var miniPatch = Mini2PatchSession()
++    var miniPatchUpdate: ((Mini2PatchSession) -> Void)?
++    var advancedDesired = false
++    private var patchClosing = false
++    func prepareMiniPatchExit() { patchClosing = true; miniPatch.retry() }
++    func cancelMiniPatchExit() { patchClosing = false }
++    func retryMiniPatch() { miniPatch.retry() }
++    private func driveMiniPatch() {
++        guard model == .mini2, canRecord, !stopping, !reconnectDeleteSent,
++              query == nil, pendingWrite == nil, !miniAudioSettings.busy,
++              commandBuffers.count < 32, statusFramesReceived > 0,
++              let channel = queryChannel, channel.isOpen() else { return }
++        nextQuerySequence &+= 1
++        defer { miniPatchUpdate?(miniPatch) }
++        guard let bytes = miniPatch.next(desired: advancedDesired, closing: patchClosing, sequence: nextQuerySequence, now: now) else { return }
++        guard bytes.count <= Int(channel.getMTU()) else { return }
++        let data = NSMutableData(data: Data(bytes))
++        commandBuffers.append(data); pendingWrite = data.mutableBytes
++        record("mini_patch_command", ["command": miniPatch.pending?.rawValue ?? ""])
++        let result = channel.writeAsync(data.mutableBytes, length: UInt16(bytes.count), refcon: data.mutableBytes)
++        if result != 0 { commandBuffers.removeAll { $0 === data }; pendingWrite = nil }
++    }
 +    private var sdpPending = false
 +    var mini2Hotkey: ((Mini2Hotkey) -> Void)?
 +    var mini2Status: ((Mini2SPPStatus) -> Void)?
      let device: IOBluetoothDevice
      let eventLog: URL
      let connectionID = UUID().uuidString
-@@ -12,13 +21,18 @@
+@@ -12,13 +43,18 @@
      var recordingComplete: ((URL?, String) -> Void)?
      var unexpectedStop: (() -> Void)?
      var audioSamples: (([Float]) -> Void)?
@@ -41,13 +63,13 @@
      var beforeReconnectDeletion: (() throws -> Void)?
      private var query: MicControlQuery?, queryDeadline: TimeInterval?
      private var queryChannel: IOBluetoothRFCOMMChannel?
-@@ -27,9 +41,11 @@
+@@ -27,9 +63,11 @@
      private var pendingWrite: UnsafeMutableRawPointer?
      private var statusRouteSeen = false
      private(set) var reconnectDeleteSent = false
 -    var canQuery: Bool { canRecord && statusRouteSeen && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
-+    var canQuery: Bool { canRecord && (model.usesMiniSPP || statusRouteSeen) && query == nil && pendingWrite == nil && commandBuffers.count < 32 && !miniAudioSettings.busy }
-+    var controlIdle: Bool { query == nil && pendingWrite == nil && !miniAudioSettings.busy }
++    var canQuery: Bool { canRecord && (model.usesMiniSPP || statusRouteSeen) && query == nil && pendingWrite == nil && commandBuffers.count < 32 && !miniAudioSettings.busy && !miniPatch.busy }
++    var controlIdle: Bool { query == nil && pendingWrite == nil && !miniAudioSettings.busy && !miniPatch.busy }
 +    var canRecoverKeyTest: Bool { canRecord && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
      private var buttonEvents: [MicButtonEvent] = []
 -    private let parser = FrameParser(), buttons = MicButtonDetector()
@@ -55,7 +77,7 @@
      private let decoder: LC3Decoder
      private let recorder = RecordingSegments()
      private var recordingStarted: TimeInterval?
-@@ -87,8 +103,11 @@
+@@ -87,8 +125,11 @@
              self.record("shutdown_outcome", ["outcome": String(describing: result)])
          })
 
@@ -69,7 +91,7 @@
          guard let address = device.addressString else { throw StreamError.invalid("设备没有蓝牙地址") }
          routes = AudioRoutes(target: address)
          decoder = try LC3Decoder()
-@@ -110,8 +129,9 @@
+@@ -110,8 +151,9 @@
          }
      }
      func start() throws {
@@ -80,7 +102,7 @@
          linkHandle = device.connectionHandle
          created = now
          update?("准备 SPP · \(routes.description)", 0, 0, 0)
-@@ -120,19 +140,39 @@
+@@ -120,19 +162,39 @@
              guard let self, !self.stopping else { return }
              do { try self.routes.check(requirePresent: true) }
              catch { self.stop(error.localizedDescription); return }
@@ -130,7 +152,7 @@
      }
      private func ensureTimer() {
          guard timer == nil else { return }
-@@ -153,6 +193,8 @@
+@@ -153,6 +215,8 @@
      }
      private func tick() {
          guard !retired else { return }
@@ -139,9 +161,11 @@
          if let deadline = queryDeadline, now >= deadline {
              finishQuery("指令应答超时；SPP 保持连接", kind: "control_timeout")
          }
-@@ -190,6 +232,11 @@
+@@ -189,7 +253,13 @@
+ #else
          do { try routes.check(requirePresent: true) } catch { stop(error.localizedDescription); return }
  #endif
++        driveMiniPatch()
          if let openedAt {
 +            if now >= nextControlDiagnostic {
 +                nextControlDiagnostic = now + 10
@@ -151,7 +175,7 @@
              if let recordingStarted, now - recordingStarted >= recordingDuration {
                  stopRecording("定时录音完成")
              }
-@@ -211,7 +258,44 @@
+@@ -211,7 +281,44 @@
                                       "stream_frame_offset": frames])
          update?("正在保存录音 · SPP 保持连接", 0, level, presses)
      }
@@ -169,7 +193,7 @@
 +    }
 +    private func driveMiniAudioSettings() {
 +        guard model.usesMiniSPP, canRecord, !stopping, !retired, !reconnectDeleteSent,
-+              query == nil, pendingWrite == nil, commandBuffers.count < 32,
++              query == nil, pendingWrite == nil, !miniPatch.busy, commandBuffers.count < 32,
 +              let channel = queryChannel, channel.isOpen() else { return }
 +        defer { miniAudioUpdate?(miniAudioSettings.view(at: now)) }
 +        guard let command = miniAudioSettings.nextCommand(at: now) else { return }
@@ -196,7 +220,7 @@
          guard (command == .keyTestOff ? canRecoverKeyTest : canQuery), let channel = queryChannel, channel.isOpen() else {
              throw StreamError.invalid("请等待 SPP 状态就绪和上一条指令完成")
          }
-@@ -237,7 +321,7 @@
+@@ -237,7 +344,7 @@
              record("control_auto_reconnect_disabled", ["command": command.rawValue, "persisted": true])
          }
          let data = NSMutableData(data: Data(bytes))
@@ -205,7 +229,7 @@
          pendingWrite = data.mutableBytes
          if command == .keyTestOn { keyTestMayBeActive = true }
          if command == .deleteSPPReconnect { reconnectDeleteSent = true }
-@@ -259,6 +343,8 @@
+@@ -259,6 +366,8 @@
          if request.command == .keyTestOff, payload != nil { keyTestMayBeActive = false }
          query = nil; queryDeadline = nil
          controlUpdate?(message)
@@ -214,7 +238,7 @@
          let result: Result<[UInt8], Error> = payload.map { .success($0) } ?? .failure(StreamError.invalid(message))
          // Defer follow-up commands until the receive parser has returned.
          let callback = queryCompleted
-@@ -269,8 +355,15 @@
+@@ -269,8 +378,15 @@
              DispatchQueue.main.async { [weak self] in self?.rfcommChannelWriteComplete(channel, refcon: refcon, status: error) }; return
          }
          guard !retired, let refcon, refcon == pendingWrite, channel === queryChannel else { return }
@@ -230,7 +254,7 @@
          if error != 0 { finishQuery("指令写入失败：\(error)；SPP 保持连接", kind: "control_write_failed") }
      }
      func stopRecording(_ reason: String = "录音已保存") {
-@@ -315,7 +408,7 @@
+@@ -315,7 +431,7 @@
          closeNotifications.removeAll()
          for channel in channels.values { _ = channel.setDelegate(nil) }
          channels.removeAll()
@@ -239,7 +263,7 @@
          var routeFailed = false
          do { try routes.restoreLockedDefaults() }
          catch { routeFailed = true; message += "；路由恢复失败：\(error.localizedDescription)" }
-@@ -325,8 +418,36 @@
+@@ -325,8 +441,36 @@
          let callback = complete; complete = nil
          callback?(self, message, routeFailed)
      }
@@ -276,7 +300,7 @@
          finishQuery("SPP 正在关闭，未完成指令不自动重发", kind: "control_cancelled")
  #if HFP_DIAGNOSTIC
          endHFPDiagnostic("session_stop: \(reason)")
-@@ -354,8 +475,8 @@
+@@ -354,8 +498,8 @@
          // On timeout the App retains this session and its delegate, so a late-open
          // callback can still request bounded cleanup. No new capture is allowed.
          var message = finalReason
@@ -287,7 +311,7 @@
          if let routeFailure { message += "；音频收尾检查异常：\(routeFailure)" }
          record("connection_finished", ["recovery_required": unconfirmed || routeFailure != nil])
          let callback = complete; complete = nil
-@@ -380,6 +501,7 @@
+@@ -380,6 +524,7 @@
          guard openNow else { stop("SPP 打开回调到达时通道已不在打开状态，需确认关闭"); return }
          guard openedAt == nil else { stop("意外重复打开"); return }
          openedAt = now
@@ -295,7 +319,7 @@
          queryChannel = opened
      }
      func rfcommChannelData(_ source: IOBluetoothRFCOMMChannel!, data pointer: UnsafeMutableRawPointer!, length count: Int) {
-@@ -393,9 +515,16 @@
+@@ -393,9 +538,16 @@
      }
      private func receive(_ bytes: Data) {
          guard !stopping, openedAt != nil else { return }
@@ -313,7 +337,7 @@
                  for packet in envelope.audio {
                      let pcm = try decoder.decode(packet)
                      level = pcm.map(abs).max() ?? 0
-@@ -416,12 +545,23 @@
+@@ -416,12 +568,23 @@
                      if let event = MicKeyTestEvent(frame: c), event.sequence != lastKeyTestSequence {
                          lastKeyTestSequence = event.sequence
                          record("key_test_event", ["button": event.button.rawValue, "sequence": event.sequence])
@@ -338,7 +362,7 @@
                                  finishQuery(request.summary(payload) + "；SPP 保持连接", kind: "control_reply",
                                              fields: ["control_hex": c.map { String(format: "%02x", $0) }.joined()], payload: payload)
                              }
-@@ -431,13 +571,57 @@
+@@ -431,13 +594,67 @@
                          }
                      }
                      for event in buttons.observe(c, time: Date().timeIntervalSince1970) {
@@ -366,7 +390,7 @@
 +        if miniAudioSettings.busy {
 +            DispatchQueue.main.async { [weak self] in self?.driveMiniAudioSettings() }
 +        }
-+        for event in batch.events {
++        for event in batch.events where model != .mini2 || miniPatch.allowsStockEvents {
 +            if event == .connection { presses += 1 }
 +            record(model.rawValue + "_hotkey", ["button": event.rawValue,
 +                "source": event == .connection ? "capture" : "denoise_state_change"])
@@ -378,6 +402,16 @@
 +        }
 +        for frame in batch.controls {
 +            controlFramesReceived += 1
++            if miniPatch.receive(frame) {
++                if let identity = miniPatch.identity {
++                    record("mini_patch_identity", ["revision": Int(identity.revision), "capabilities": Int(identity.capabilities), "mode": Int(identity.mode.rawValue)])
++                }
++                miniPatchUpdate?(miniPatch); continue
++            }
++            if let event = frame.patchKey, advancedDesired, miniPatch.accepts(event) {
++                record("mini_patch_hotkey", ["button": event.rawValue]); mini2Hotkey?(event)
++                continue
++            }
 +            guard let request = query else { continue }
 +            do {
 +                if let payload = try request.reply(frame.bytes) {

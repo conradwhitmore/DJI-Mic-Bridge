@@ -9,6 +9,28 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private var mini2Stream: Mini2SPPStream
     private var miniAudioSettings: MiniAudioSettings
     var miniAudioUpdate: ((MiniAudioSettings.ViewState) -> Void)?
+    private(set) var miniPatch = Mini2PatchSession()
+    var miniPatchUpdate: ((Mini2PatchSession) -> Void)?
+    var advancedDesired = false
+    private var patchClosing = false
+    func prepareMiniPatchExit() { patchClosing = true; miniPatch.retry() }
+    func cancelMiniPatchExit() { patchClosing = false }
+    func retryMiniPatch() { miniPatch.retry() }
+    private func driveMiniPatch() {
+        guard model == .mini2, canRecord, !stopping, !reconnectDeleteSent,
+              query == nil, pendingWrite == nil, !miniAudioSettings.busy,
+              commandBuffers.count < 32, statusFramesReceived > 0,
+              let channel = queryChannel, channel.isOpen() else { return }
+        nextQuerySequence &+= 1
+        defer { miniPatchUpdate?(miniPatch) }
+        guard let bytes = miniPatch.next(desired: advancedDesired, closing: patchClosing, sequence: nextQuerySequence, now: now) else { return }
+        guard bytes.count <= Int(channel.getMTU()) else { return }
+        let data = NSMutableData(data: Data(bytes))
+        commandBuffers.append(data); pendingWrite = data.mutableBytes
+        record("mini_patch_command", ["command": miniPatch.pending?.rawValue ?? ""])
+        let result = channel.writeAsync(data.mutableBytes, length: UInt16(bytes.count), refcon: data.mutableBytes)
+        if result != 0 { commandBuffers.removeAll { $0 === data }; pendingWrite = nil }
+    }
     private var sdpPending = false
     var mini2Hotkey: ((Mini2Hotkey) -> Void)?
     var mini2Status: ((Mini2SPPStatus) -> Void)?
@@ -41,8 +63,8 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private var pendingWrite: UnsafeMutableRawPointer?
     private var statusRouteSeen = false
     private(set) var reconnectDeleteSent = false
-    var canQuery: Bool { canRecord && (model.usesMiniSPP || statusRouteSeen) && query == nil && pendingWrite == nil && commandBuffers.count < 32 && !miniAudioSettings.busy }
-    var controlIdle: Bool { query == nil && pendingWrite == nil && !miniAudioSettings.busy }
+    var canQuery: Bool { canRecord && (model.usesMiniSPP || statusRouteSeen) && query == nil && pendingWrite == nil && commandBuffers.count < 32 && !miniAudioSettings.busy && !miniPatch.busy }
+    var controlIdle: Bool { query == nil && pendingWrite == nil && !miniAudioSettings.busy && !miniPatch.busy }
     var canRecoverKeyTest: Bool { canRecord && query == nil && pendingWrite == nil && commandBuffers.count < 32 }
     private var buttonEvents: [MicButtonEvent] = []
     private let parser = FrameParser(requireContinuousAudio: false), buttons = MicButtonDetector()
@@ -231,6 +253,7 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
 #else
         do { try routes.check(requirePresent: true) } catch { stop(error.localizedDescription); return }
 #endif
+        driveMiniPatch()
         if let openedAt {
             if now >= nextControlDiagnostic {
                 nextControlDiagnostic = now + 10
@@ -272,7 +295,7 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
     }
     private func driveMiniAudioSettings() {
         guard model.usesMiniSPP, canRecord, !stopping, !retired, !reconnectDeleteSent,
-              query == nil, pendingWrite == nil, commandBuffers.count < 32,
+              query == nil, pendingWrite == nil, !miniPatch.busy, commandBuffers.count < 32,
               let channel = queryChannel, channel.isOpen() else { return }
         defer { miniAudioUpdate?(miniAudioSettings.view(at: now)) }
         guard let command = miniAudioSettings.nextCommand(at: now) else { return }
@@ -593,7 +616,7 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
         if miniAudioSettings.busy {
             DispatchQueue.main.async { [weak self] in self?.driveMiniAudioSettings() }
         }
-        for event in batch.events {
+        for event in batch.events where model != .mini2 || miniPatch.allowsStockEvents {
             if event == .connection { presses += 1 }
             record(model.rawValue + "_hotkey", ["button": event.rawValue,
                 "source": event == .connection ? "capture" : "denoise_state_change"])
@@ -605,6 +628,16 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
         }
         for frame in batch.controls {
             controlFramesReceived += 1
+            if miniPatch.receive(frame) {
+                if let identity = miniPatch.identity {
+                    record("mini_patch_identity", ["revision": Int(identity.revision), "capabilities": Int(identity.capabilities), "mode": Int(identity.mode.rawValue)])
+                }
+                miniPatchUpdate?(miniPatch); continue
+            }
+            if let event = frame.patchKey, advancedDesired, miniPatch.accepts(event) {
+                record("mini_patch_hotkey", ["button": event.rawValue]); mini2Hotkey?(event)
+                continue
+            }
             guard let request = query else { continue }
             do {
                 if let payload = try request.reply(frame.bytes) {

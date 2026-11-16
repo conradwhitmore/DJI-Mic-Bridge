@@ -165,16 +165,23 @@ public extension Collection where Element == UInt8 {
 /// Firmware's SPP DUML dispatcher explicitly handles 58/65; general queries
 /// are included to test reachability, never assumed supported from BLE success.
 public enum Mini2SPPCommand: String, CaseIterable {
-    case clockStart, clockStop, version, battery
+    case clockStart, clockStop, version, battery, patchIdentity, patchEnable, patchDisable
     public var code: (UInt8, UInt8) {
         switch self {
         case .clockStart, .clockStop: return (0x12, 0x58)
         case .version: return (0, 1)
         case .battery: return (5, 6)
+        case .patchIdentity, .patchEnable, .patchDisable: return (0x3f, 0xf0)
         }
     }
     public func packet(sequence: UInt16) -> [UInt8] {
-        let payload: [UInt8] = self == .clockStart ? [1] : self == .clockStop ? [2] : []
+        let payload: [UInt8]
+        switch self {
+        case .patchIdentity: payload = [0x4d, 0x42, 0x52, 0x47, 1, 0]
+        case .patchDisable: payload = [0x4d, 0x42, 0x52, 0x47, 1, 1]
+        case .patchEnable: payload = [0x4d, 0x42, 0x52, 0x47, 1, 2]
+        default: payload = self == .clockStart ? [1] : self == .clockStop ? [2] : []
+        }
         let (set, id) = code
         var b: [UInt8] = [0x55, UInt8(13 + payload.count), 4, 0, 2, 0x3a,
                          UInt8(sequence & 255), UInt8(sequence >> 8), 0x40, set, id]
@@ -187,6 +194,7 @@ public enum Mini2SPPCommand: String, CaseIterable {
         return frame.source == 0x3a && frame.destination == 2 && frame.flags == 0x80 &&
             frame.sequence == sequence && frame.commandSet == set && frame.commandID == id
     }
+    public var isPatchCommand: Bool { self == .patchIdentity || self == .patchEnable || self == .patchDisable }
 }
 
 /// Live sample evidence: 112 bytes are transported, with a zero trailer after

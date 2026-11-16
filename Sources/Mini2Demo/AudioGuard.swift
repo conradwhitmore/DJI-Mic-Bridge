@@ -3,13 +3,12 @@ import Foundation
 import MicBridgeSupport
 import MicLinkCore
 
-/// Only reads device metadata and changes defaults. Never starts an audio input or meter.
+/// Protects only the default input. Never changes output routes or starts an audio input/meter.
 final class Mini2AudioGuard {
     private let system = AudioObjectID(kAudioObjectSystemObject)
     private var locked: [(AudioObjectPropertySelector, AudioObjectID, String)] = []
     private(set) var summary = ""
-    private let selectors = [kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice,
-                             kAudioHardwarePropertyDefaultSystemOutputDevice]
+    private let selectors = [kAudioHardwarePropertyDefaultInputDevice]
     private func property(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
         .init(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
     }
@@ -56,7 +55,7 @@ final class Mini2AudioGuard {
             planned.append((selector, chosen, try string(chosen, kAudioDevicePropertyDeviceUID)))
         }
         locked = planned; try enforce()
-        summary = "输入：\(try string(planned[0].1, kAudioObjectPropertyName)) · 输出：\(try string(planned[1].1, kAudioObjectPropertyName))"
+        summary = "输入：\(try string(planned[0].1, kAudioObjectPropertyName))"
     }
     func enforce() throws {
         for (selector, id, uid) in locked {

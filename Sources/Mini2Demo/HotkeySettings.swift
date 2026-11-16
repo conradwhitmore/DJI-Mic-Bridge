@@ -48,12 +48,18 @@ final class Mini2ShortcutSettings: ObservableObject {
 
 struct Mini2HotkeyView: View {
     @ObservedObject var shortcuts: Mini2ShortcutSettings
+    var independentMode = false
+    var fourHotkeys = false
+    private var events: [Mini2Hotkey] {
+        if independentMode && fourHotkeys { return [.connection, .connectionDouble, .powerSingle, .powerDouble] }
+        return [.connection, independentMode ? .powerSingle : .powerDouble]
+    }
     var body: some View {
-        GroupBox("SPP 双热键") {
+        GroupBox(independentMode && fourHotkeys ? "SPP 四热键" : "SPP 双热键") {
             VStack(alignment: .leading, spacing: 10) {
-                ForEach([Mini2Hotkey.connection, .powerDouble], id: \.rawValue) { key in
+                ForEach(events, id: \.rawValue) { key in
                     HStack(spacing: 12) {
-                        Image(systemName: key == .connection ? "link" : "power")
+                        Image(systemName: key == .connection || key == .connectionDouble ? "link" : "power")
                             .font(.title2).frame(width: 28)
                             .foregroundStyle(shortcuts.flashes.contains(key) ? Color.blue : .secondary)
                         Text(key.title).frame(width: 100, alignment: .leading)
@@ -77,7 +83,7 @@ struct Mini2HotkeyView: View {
                     Spacer()
                     if !shortcuts.trusted { Button("授权发送快捷键") { shortcuts.permission() } }
                 }
-                Text("电源双击会切换降噪并触发热键。首次连接与断流恢复只同步状态。点击录入可设置组合键，Esc 取消，Tab 离开。")
+                Text(independentMode ? (fourHotkeys ? "两键单击、双击分别上报独立事件；双击不切换降噪或连接模式。点击录入可设置组合键，Esc 取消，Tab 离开。" : "两键单击为独立事件，双击不切换降噪。点击录入可设置组合键，Esc 取消，Tab 离开。") : "电源双击会切换降噪并触发热键。首次连接与断流恢复只同步状态。点击录入可设置组合键，Esc 取消，Tab 离开。")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(8)
         }

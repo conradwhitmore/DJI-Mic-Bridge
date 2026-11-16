@@ -30,7 +30,12 @@ final class Mini2ProtocolTests: XCTestCase {
             XCTAssertEqual(packet.sequence, 0x2345)
             XCTAssertEqual(packet.commandSet, command.code.0); XCTAssertEqual(packet.commandID, command.code.1)
             XCTAssertNotEqual(packet.commandID, 0x65)
-            XCTAssertEqual(packet.payload, command == .clockStart ? [1] : command == .clockStop ? [2] : [])
+            if command.isPatchCommand {
+                let operation: UInt8 = command == .patchIdentity ? 0 : command == .patchDisable ? 1 : 2
+                XCTAssertEqual(packet.payload, [0x4d, 0x42, 0x52, 0x47, 1, operation])
+            } else {
+                XCTAssertEqual(packet.payload, command == .clockStart ? [1] : command == .clockStop ? [2] : [])
+            }
         }
         let reply = try XCTUnwrap(Mini2Frame(frame(set: 0x12, id: 0x58, payload: [0, 1])))
         XCTAssertTrue(Mini2SPPCommand.clockStart.matches(reply, sequence: 42))

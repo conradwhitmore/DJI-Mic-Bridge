@@ -8,10 +8,11 @@ public enum MiniTransmitterModel: String, CaseIterable {
 }
 
 public enum Mini2Hotkey: String, CaseIterable {
-    case connection, powerSingle, powerDouble
+    case connection, powerSingle, powerDouble, connectionDouble
     public var title: String {
         switch self {
         case .connection: return "连接键单击"
+        case .connectionDouble: return "连接键双击"
         case .powerSingle: return "电源键单击"
         case .powerDouble: return "电源键双击"
         }

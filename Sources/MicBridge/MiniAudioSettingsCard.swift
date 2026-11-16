@@ -10,6 +10,10 @@ struct MiniAudioSettingsCard: View {
     let editable: Bool
     let setNoise: (MiniNoiseMode) -> Void
     let setTone: (MiniVoiceTone) -> Void
+    let advancedStatus: String
+    let openFirmware: () -> Void
+    @State var advancedExpanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private func miniAudioChoice(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title).font(.system(size: 12, weight: selected ? .semibold : .medium))
@@ -23,7 +27,7 @@ struct MiniAudioSettingsCard: View {
         ReferenceCard {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    ReferenceHeading(title: "设备信息", symbol: "slider.horizontal.3", subtitle: "音频设置")
+                    ReferenceHeading(title: "设备信息", symbol: "slider.horizontal.3")
                     Spacer()
                     if state.busy { ProgressView().controlSize(.small) }
                 }
@@ -47,8 +51,30 @@ struct MiniAudioSettingsCard: View {
                 }
                 if let error = state.error {
                     Text(error).font(.caption).foregroundStyle(.orange)
-                } else if !state.ready {
-                    Text(connected ? "正在读取设备设置…" : "连接 SPP 后可调节").font(.caption).foregroundStyle(.secondary)
+                }
+                if model == .mini2 {
+                    Divider().opacity(0.4)
+                    VStack(alignment: .leading, spacing: 14) {
+                        Button {
+                            withAnimation(.easeInOut(duration: reduceMotion ? 0 : 0.18)) { advancedExpanded.toggle() }
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("进阶模式").font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
+                                    if !advancedStatus.isEmpty { Text(advancedStatus).font(.caption).foregroundStyle(.secondary) }
+                                }
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary).rotationEffect(.degrees(advancedExpanded ? 90 : 0))
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityLabel("进阶模式")
+                            .accessibilityValue(advancedExpanded ? "已展开" : "已折叠")
+                        if advancedExpanded {
+                            Text("需安装 MBRG r2 补丁。启用映射后，两键的单击与双击分别触发快捷键；降噪由软件调节。")
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Button("固件管理…", action: openFirmware).buttonStyle(ReferenceButtonStyle(inset: 14))
+                        }
+                    }
                 }
             }
         }

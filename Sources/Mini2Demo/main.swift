@@ -10,6 +10,8 @@ final class Mini2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     private lazy var shortcuts = Mini2ShortcutSettings(log: log)
     private var window: NSWindow!
     private var terminating = false
+    private var showingExitChoice = false
+    private var forceLocalExit = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         spp.controlFrame = { [weak self] frame in self?.ble.observeKey(frame, transport: "SPP") }
         spp.hotkey = { [weak self] key in self?.shortcuts.receive(key) }
@@ -32,22 +34,52 @@ final class Mini2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { NSApp.terminate(nil); return false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !terminating else { return .terminateCancel }
+        if forceLocalExit { return .terminateNow }
+        guard !terminating, !showingExitChoice else { return .terminateCancel }
         terminating = true
         // Always reply asynchronously, after applicationShouldTerminate has returned terminateLater.
         DispatchQueue.main.async { [self] in
             ble.prepareClose { [self] ok in
                 guard ok else { finishTermination(false); return }
-                spp.close { [self] closed in finishTermination(closed) }
+                spp.close { [self] closed in finishTermination(closed, allowLocalExit: !closed) }
             }
         }
         return .terminateLater
     }
-    private func finishTermination(_ ok: Bool) {
-        terminating = false; NSApp.reply(toApplicationShouldTerminate: ok)
-        if !ok {
-            log.add("退出尚未完成，请查看连接状态并重试关闭通道 / 退出按键测试")
-            window.makeKeyAndOrderFront(nil)
+    private func finishTermination(_ ok: Bool, allowLocalExit: Bool = false) {
+        showingExitChoice = !ok && allowLocalExit
+        terminating = false
+        NSApp.reply(toApplicationShouldTerminate: ok)
+        guard !ok else { return }
+        window.makeKeyAndOrderFront(nil)
+        guard allowLocalExit else {
+            log.add("退出未完成：请先处理 BLE 按键测试、增益恢复或固件传输状态")
+            return
+        }
+        log.add("SPP 关闭未确认；可强制退出 Demo，不发送 12/65")
+        // Cancel the pending AppKit termination before presenting the choice.
+        DispatchQueue.main.async { [self] in
+            let alert = NSAlert()
+            alert.messageText = "SPP 关闭尚未确认"
+            alert.informativeText = "可强制退出 Demo，由系统回收本进程资源。不会发送 12/65，也不代表设备端已退出 SPP 模式。"
+            alert.addButton(withTitle: "取消")
+            alert.addButton(withTitle: "强制退出 Demo")
+            alert.beginSheetModal(for: window) { [self] response in
+                showingExitChoice = false
+                guard response == .alertSecondButtonReturn else { return }
+                // Recheck BLE safeguards in case its state changed while the sheet was open.
+                terminating = true
+                ble.prepareClose { [self] ready in
+                    terminating = false
+                    guard ready else {
+                        log.add("强制退出已取消：BLE 操作尚未安全结束")
+                        return
+                    }
+                    log.add("用户选择强制退出 Demo；SPP 关闭仍未确认，未发送 12/65")
+                    forceLocalExit = true
+                    NSApp.terminate(nil)
+                }
+            }
         }
     }
 }
@@ -69,7 +101,8 @@ struct DemoView: View {
                     Spacer()
                     Button { NSWorkspace.shared.open(log.directory) } label: { Label("打开本次日志", systemImage: "folder") }
                 }
-                Mini2HotkeyView(shortcuts: shortcuts).disabled(ble.otaLocked)
+                Mini2HotkeyView(shortcuts: shortcuts, independentMode: spp.patchIdentity?.mode == .enabled,
+                               fourHotkeys: spp.patchIdentity?.supportsDoubleClicks == true).disabled(ble.otaLocked)
                 DisclosureGroup("官方固件调试（当前暂停）") {
                 GroupBox("官方固件同版本平刷 · 02.03.17.00") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -179,12 +212,23 @@ struct DemoView: View {
                             if spp.recording { Image(systemName: "record.circle.fill").foregroundStyle(.red) }
                         }
                         HStack {
+                            Button("识别补丁") { spp.identifyPatch() }.disabled(!spp.opened || spp.probing || spp.denoiseBusy)
+                            Button(spp.patchIdentity?.mode == .enabled ? "关闭热键模式" : "开启热键模式") {
+                                spp.setPatchMode(spp.patchIdentity?.mode != .enabled)
+                            }.disabled(!spp.opened || spp.probing || spp.denoiseBusy || spp.patchIdentity?.supportsKeyMode != true || spp.patchIdentity?.mode == .factoryBusy)
+                            Text(spp.patchStatus).font(.caption).textSelection(.enabled)
+                        }
+                        HStack {
                             Button("验证 SPP 指令") { spp.verifyCommands() }.disabled(!spp.opened || spp.probing || spp.denoiseBusy)
                             Text(spp.commandStatus).font(.caption).textSelection(.enabled)
                         }
                         HStack {
                             Text("降噪：" + (spp.denoise.map { $0 ? "开启" : "关闭" } ?? "—"))
                             Text("电源双击降噪：" + spp.denoiseButton).foregroundStyle(.secondary)
+                            if spp.patchIdentity?.supportsKeyMode == true {
+                                Button("开启降噪") { spp.setDenoise(true) }.disabled(!spp.canSetDenoise || spp.denoiseBusy || spp.probing || spp.denoise == true)
+                                Button("关闭降噪") { spp.setDenoise(false) }.disabled(!spp.canSetDenoise || spp.denoiseBusy || spp.probing || spp.denoise == false)
+                            }
                         }
                         Button("e004 握手测试 · 不改增益") { spp.probeTool() }.disabled(!spp.canProbeTool)
                         Button("e004 只读版本查询") { spp.probeTool(versionOnly: true) }.disabled(!spp.canProbeTool)
@@ -195,7 +239,7 @@ struct DemoView: View {
                             Text("连接键 capture：\(spp.captureCount) 次").font(.title3.monospacedDigit())
                         }
                         Text(spp.statusMetrics).font(.system(.caption, design: .monospaced))
-                        Text("普通 SPP 被动监听，无需工厂模式。连接键读取 capture 事件；电源双击通过降噪变化识别。")
+                        Text(spp.patchIdentity?.mode == .enabled ? "补丁热键模式：按能力上报独立单击／双击事件，原短按功能暂停；电源长按走原厂关机路径（待本轮实测）。" : "普通 SPP：连接键读取 capture，电源双击按降噪变化识别；识别补丁不会自动开启热键模式。")
                             .font(.caption).foregroundStyle(.secondary)
                         Text(spp.status).font(.callout).foregroundStyle(.secondary)
                         Text("输入锁定为非 DJI（优先 MicBridge Audio）。退出 SPP 单次发送 12/65，收到 ACK 00 后关闭通道。普通关闭只释放通道；不自动重连。")

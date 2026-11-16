@@ -18,6 +18,8 @@ final class SPPController: NSObject, ObservableObject {
     @Published private(set) var status = "未连接"
     @Published private(set) var commandStatus = "未验证 SPP 指令"
     @Published private(set) var probing = false
+    @Published private(set) var patchIdentity: Mini2PatchIdentity?
+    @Published private(set) var patchStatus = "未确认补丁"
     @Published private(set) var denoise: Bool?
     @Published private(set) var canSetDenoise = false
     @Published private(set) var denoiseBusy = false
@@ -121,6 +123,11 @@ final class SPPController: NSObject, ObservableObject {
         let new = SPPProbe(device: row.device, channelID: channelID, log: log)
         if let probe { retired.append(probe) }
         probe = new
+        patchIdentity = nil; patchStatus = "未确认补丁"
+        new.patchUpdate = { [weak self, weak new] identity, text in
+            guard let self, self.probe === new else { return }
+            self.patchIdentity = identity; self.patchStatus = text
+        }
         new.hotkey = { [weak self, weak new] key in
             guard let self, self.probe === new else { return }; self.hotkey?(key)
         }
@@ -166,6 +173,8 @@ final class SPPController: NSObject, ObservableObject {
     }
     func toggleCapture() { probe?.toggleCapture() }
     func verifyCommands() { probe?.verifyCommands() }
+    func identifyPatch() { probe?.identifyPatch() }
+    func setPatchMode(_ enabled: Bool) { probe?.setPatchMode(enabled) }
     func exitSPP() { probe?.exitSPP() }
     func setDenoise(_ enabled: Bool) { probe?.setDenoise(enabled) }
 }
@@ -189,6 +198,8 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
     var update: ((String, Bool, Bool, String) -> Void)?
     var finished: ((Bool) -> Void)?
     var commandUpdate: ((String, Bool) -> Void)?
+    var patchUpdate: ((Mini2PatchIdentity?, String) -> Void)?
+    private var patchIdentity: Mini2PatchIdentity?
     private var commandQueue: [Mini2SPPCommand] = []
     private var pendingCommand: (Mini2SPPCommand, UInt16, TimeInterval)?
     private var pendingExit: (MicControlQuery, TimeInterval)?
@@ -205,6 +216,7 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private var bytes = 0, envelopes = 0, blocks = 0
     private var started = ProcessInfo.processInfo.systemUptime
     private var requested = false, opened = false, stopping = false, completed = false
+    private var resourcesReleased = false
     private var outcome: RFCOMMCloseCoordinator.Outcome?
     private var message = "准备非 DJI 音频路由…"
     private var closeCompletion: ((Bool) -> Void)?
@@ -266,6 +278,7 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
             log.add(commandResults[0]); commandUpdate?(commandResults[0], false)
         }
         if let (command, _, deadline) = pendingCommand, now >= deadline {
+            if command.isPatchCommand { setPatch(nil, "未确认补丁状态：查询超时，可重新探测") }
             commandResults.append("\(command.rawValue)：未收到匹配回应")
             log.add(commandResults.last!); pendingCommand = nil; sendNextCommand()
         }
@@ -285,12 +298,14 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
     }
     func rfcommChannelOpenComplete(_ channel: IOBluetoothRFCOMMChannel!, status rc: IOReturn) {
         guard Thread.isMainThread else { DispatchQueue.main.async { [weak self] in self?.rfcommChannelOpenComplete(channel, status: rc) }; return }
+        guard !resourcesReleased else { return }
         if let channel { track(channel) }
         closer.openingCompleted(id: channel.map { UInt64($0.getObjectID()) }, success: rc == 0)
         guard !stopping else { return }
         if rc != 0 { message = "SPP 打开失败：\(rc)"; stop(); return }
         opened = true; message = "SPP 已连接 · 可验证指令、保存原始流与 WAV"
         log.add(message, fields: ["mtu": channel?.getMTU() ?? 0]); publish()
+        identifyPatch()
     }
     func rfcommChannelData(_ channel: IOBluetoothRFCOMMChannel!, data pointer: UnsafeMutableRawPointer!, length count: Int) {
         guard let pointer, count > 0 else { return }
@@ -314,6 +329,7 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
                 for status in statuses {
                     statusFrames += 1
                     for key in hotkeyDetector.observe(status, at: now) {
+                        guard patchIdentity?.mode != .enabled else { continue }
                         log.add("SPP 热键：\(key.title)", fields: ["source": key == .connection ? "capture" : "denoise_state_change", "statusFrame": statusFrames])
                         hotkey?(key)
                     }
@@ -337,6 +353,10 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
             }
             if let frame = packet.control {
                 log.add("SPP DUML", fields: ["hex": frame.bytes.hex]); controlFrame?(frame)
+                if let key = frame.patchKey, patchIdentity?.accepts(key) == true {
+                    log.add("SPP 独立热键：\(key.title)", fields: ["source": "MBRG_3F_F1", "hex": frame.bytes.hex])
+                    hotkey?(key)
+                }
                 if let (query, _) = pendingExit {
                     do {
                         if try query.reply(frame.bytes) != nil {
@@ -358,6 +378,15 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
                     case .clockStop: success = frame.payload.count == 8 && Array(frame.payload.prefix(2)) == [0, 2]
                     case .version: success = (try? Mini2Request(.version, sequence: sequence).validate(frame)) != nil
                     case .battery: success = (try? Mini2Request(.battery, sequence: sequence).validate(frame)) != nil
+                    case .patchIdentity, .patchEnable, .patchDisable:
+                        let identity = Mini2PatchIdentity(frame)
+                        success = identity != nil && (command == .patchIdentity ||
+                            (identity?.result == 0 && identity?.mode == (command == .patchEnable ? .enabled : .disabled)))
+                        if let identity {
+                            let mode = identity.mode == .enabled ? "热键模式已开启" : identity.mode == .disabled ? "热键模式已关闭" : "原厂工厂模式占用"
+                            setPatch(identity, "MBRG r\(identity.revision) · \(mode)")
+                            hotkeyDetector.resetBaseline()
+                        } else { setPatch(nil, "未确认补丁：回应格式不符") }
                     }
                     commandResults.append("\(command.rawValue)：\(success ? "有效回应" : "回应格式不符")")
                     if command == .clockStop, success { clockArmed = false }
@@ -388,6 +417,20 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
               pendingCommand == nil, pendingDenoise == nil, commandQueue.isEmpty else { return }
         commandResults = []; commandQueue = [.clockStart, .clockStop, .version, .battery]
         sendNextCommand()
+    }
+    private func setPatch(_ identity: Mini2PatchIdentity?, _ text: String) {
+        patchIdentity = identity; patchUpdate?(identity, text); log.add(text)
+    }
+    func identifyPatch() { patchQuery(.patchIdentity) }
+    func setPatchMode(_ enabled: Bool) {
+        guard let patchIdentity, patchIdentity.supportsKeyMode,
+              patchIdentity.mode != .factoryBusy else { return }
+        patchQuery(enabled ? .patchEnable : .patchDisable)
+    }
+    private func patchQuery(_ command: Mini2SPPCommand) {
+        guard opened, !stopping, pendingExit == nil, !exitAcknowledged,
+              pendingCommand == nil, pendingDenoise == nil, commandQueue.isEmpty else { return }
+        commandResults = []; commandQueue = [command]; sendNextCommand()
     }
     func setDenoise(_ enabled: Bool) {
         guard opened, !stopping, pendingExit == nil, !exitAcknowledged, pendingCommand == nil, commandQueue.isEmpty,
@@ -446,7 +489,11 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
             pendingCommand = (command, commandSequence, now + 4)
             if command == .clockStart { clockArmed = true }
             let rc = write(command, sequence: sequence)
-            if rc != 0 { pendingCommand = nil; commandResults.append("\(command.rawValue)：写入失败 \(rc)"); continue }
+            if rc != 0 {
+                pendingCommand = nil; commandResults.append("\(command.rawValue)：写入失败 \(rc)")
+                if command.isPatchCommand { setPatch(nil, "未确认补丁状态：发送失败") }
+                continue
+            }
             guard pendingCommand?.1 == sequence else { return }
             commandUpdate?((commandResults + ["等待 \(command.rawValue)…"]).joined(separator: " · "), true)
             return
@@ -477,6 +524,7 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
         log.add("SPP 原始数据保存结束"); publish()
     }
     func stop(completion: ((Bool) -> Void)? = nil) {
+        if resourcesReleased { completion?(true); return }
         if let outcome { completion?(outcome != .unconfirmed); return }
         if completion != nil { closeCompletion = completion }
         guard !stopping else { return }
@@ -485,13 +533,27 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
         pendingExit = nil
         if pendingDenoise != nil { pendingDenoise = nil; denoiseResult = "连接关闭，降噪验证已取消"; log.add(denoiseResult) }
         stopping = true; stopCapture()
+        setPatch(nil, "连接已结束，补丁身份需重新探测")
         log.add(exitAcknowledged ? "12/65 ACK 00 后关闭本地 SPP 通道；不主动断开系统蓝牙" : "关闭本地 SPP 通道；未确认 12/65，不主动断开系统蓝牙")
+        if exitAcknowledged {
+            // The device acknowledged the explicit exit. Dispose this local session,
+            // without claiming that macOS delivered a channel-closed notification.
+            releaseResources(requestClose: true)
+            message = "12/65 退出已确认，本地 SPP 会话已释放"
+            log.add(message, fields: ["completionBasis": "12/65_ack00"])
+            publish()
+            completed = true
+            let callback = closeCompletion; closeCompletion = nil
+            callback?(true); finished?(true)
+            return
+        }
         closer.stop(now: now); publish()
     }
     func rfcommChannelClosed(_ channel: IOBluetoothRFCOMMChannel!) { observedClose(channel) }
     @objc private func closeNotice(_ note: IOBluetoothUserNotification!, channel: IOBluetoothRFCOMMChannel!) { observedClose(channel) }
     private func observedClose(_ channel: IOBluetoothRFCOMMChannel?) {
         guard Thread.isMainThread else { DispatchQueue.main.async { [weak self] in self?.observedClose(channel) }; return }
+        guard !resourcesReleased else { return }
         guard let channel else { return }
         let id = UInt64(channel.getObjectID()); closedIDs.insert(id)
         closer.channelClosed(id: id)
@@ -501,12 +563,29 @@ private final class SPPProbe: NSObject, IOBluetoothRFCOMMChannelDelegate {
         if !stopping { message = "SPP 通道已关闭"; stop() }
     }
     private func closed(_ result: RFCOMMCloseCoordinator.Outcome) {
+        guard !resourcesReleased else { return }
         outcome = result; opened = false
-        if result != .unconfirmed { timer?.invalidate(); timer = nil }
+        if result != .unconfirmed { releaseResources(requestClose: false) }
         message = result == .unconfirmed ? "SPP 关闭尚未确认" : "SPP 通道已关闭"
         log.add(message); publish()
         let completion = closeCompletion; closeCompletion = nil; completion?(result != .unconfirmed)
         if !completed || result == .confirmed { completed = true; finished?(result != .unconfirmed) }
+    }
+    private func releaseResources(requestClose: Bool) {
+        resourcesReleased = true; opened = false
+        timer?.invalidate(); timer = nil
+        for notice in notices { notice.unregister() }
+        notices.removeAll()
+        // Detach before closing; close may call back synchronously.
+        let oldChannels = Array(channels.values)
+        for channel in oldChannels { _ = channel.setDelegate(nil) }
+        channels.removeAll()
+        if requestClose {
+            for channel in oldChannels {
+                let result = channel.close()
+                log.add("ACK 后本地通道关闭请求已提交", fields: ["result": Int(result)])
+            }
+        }
     }
     private func publish() {
         let fresh = opened && !stopping && now - lastStatusTime < 2

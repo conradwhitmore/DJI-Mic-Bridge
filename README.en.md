@@ -10,6 +10,8 @@ A native macOS app that receives audio directly from a **DJI Mic 2 / Mic Mini / 
 
 *Screenshot of MicBridge in use, with the device-name suffix redacted; showing SPP audio reception, battery level, button mappings, and live audio monitoring.*
 
+Main's **0.6.0 development build** adds optional Mini 2 MBRG r2 support: four independent single/double-click hotkeys, enabled only after a fresh SPP capability response. Device Information contains an expandable advanced-mode section and a separate firmware window for installing r2 or restoring the exact official 02.03.17.00 image, with preparation steps, progress and percentage. The main mapping toggle alone controls the temporary button mode after capability detection. Complete DJI firmware is not bundled. The new app flashing flow requires hardware acceptance separately from the successful Demo tests; restoration requires working BLE and is not a brick-recovery method. See [usage](docs/USAGE.md).
+
 ## Features
 
 - 48 kHz mono decoding, live meters, segmented WAV recording and playback.

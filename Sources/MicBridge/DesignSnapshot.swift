@@ -27,10 +27,23 @@ func renderDesignSnapshots(to directory: URL) throws {
         for dark in [false, true] {
             for width: CGFloat in [360, 520] {
                 try save(MiniAudioSettingsCard(model: profile, state: state, connected: true, editable: true,
-                    setNoise: { _ in }, setTone: { _ in }).padding(18).background(bridgeCanvas),
+                    setNoise: { _ in }, setTone: { _ in }, advancedStatus: "MBRG r2 · 四热键已启用",
+                    openFirmware: {}, advancedExpanded: true).padding(18).background(bridgeCanvas),
                     name: "audio-settings-\(profile.rawValue)-\(Int(width))-\(dark ? "dark" : "light")",
-                    width: width, height: profile == .mini2 ? 230 : 180, dark: dark)
+                    width: width, height: profile == .mini2 ? 440 : 180, dark: dark)
             }
+        }
+    }
+    for dark in [false, true] {
+        try save(ReferenceCard {
+            ButtonMappingPanel(model: .mini2, advanced: true, shortcuts: model.buttonShortcuts,
+                available: true, connected: true, canConnect: false, connect: {}, hotkeyEnabled: true,
+                hotkeyActive: true, modeBusy: false, modeStatus: "", canChangeMode: true, setHotkey: { _ in })
+        }.padding(18).background(bridgeCanvas), name: "four-hotkeys-\(dark)", width: 540, height: 480, dark: dark)
+        let updater = Mini2FirmwareUpdater(bridge: model, address: "00:00:00:00:00:00")
+        for kind in Mini2FirmwareImage.Kind.allCases {
+            updater.chooseKind(kind)
+            try save(Mini2FirmwareView(updater: updater), name: "firmware-\(kind.rawValue)-\(dark)", width: 600, height: 680, dark: dark)
         }
     }
     for dark in [false, true] {

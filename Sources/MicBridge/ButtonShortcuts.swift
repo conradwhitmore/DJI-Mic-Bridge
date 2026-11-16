@@ -14,9 +14,10 @@ extension MicButton {
 /// Owns only shortcut preferences and dispatch; never opens Bluetooth or audio.
 final class ButtonShortcuts: ObservableObject {
     @Published private(set) var settings = ButtonShortcutSettings()
+    var advanced = false
     @Published private(set) var trusted = false
     @Published private(set) var lastEvent = "按下发射器按键，查看最近事件。"
-    @Published private(set) var eventCounts: [MicButton: UInt64] = [:]
+    @Published private(set) var eventCounts: [String: UInt64] = [:]
     var editing = false
     private var device = ""
     private var gate = ButtonShortcutGate()
@@ -35,7 +36,11 @@ final class ButtonShortcuts: ObservableObject {
     }
     func bind(_ button: MicButton, to shortcut: ButtonShortcut?) {
         guard shortcut == nil || shortcut?.isValid == true else { return }
-        settings.bindings[button.rawValue] = shortcut; save()
+        bind(button.rawValue, to: shortcut)
+    }
+    func bind(_ key: String, to shortcut: ButtonShortcut?) {
+        guard shortcut == nil || shortcut?.isValid == true else { return }
+        settings.bindings[key] = shortcut; save()
     }
     func refreshPermission() { if !preview { trusted = AXIsProcessTrusted() } }
     func requestPermission() {
@@ -46,17 +51,17 @@ final class ButtonShortcuts: ObservableObject {
     func receive(_ event: MicKeyTestEvent, active: Bool) {
         let time = Date().timeIntervalSince1970
         guard !preview, active, gate.accept(button: event.button.rawValue, sequence: event.sequence, time: time) else { return }
-        dispatch(event.button, name: event.button.shortcutTitle + "短按")
+        dispatch(event.button.rawValue, name: event.button.shortcutTitle + "短按")
     }
     func receive(_ event: Mini2Hotkey, active: Bool) {
         // Already validated once per complete Mini-family status snapshot; no Mic 2 sequence gate.
         guard !preview, active else { return }
-        dispatch(event == .connection ? .link : .power, name: event.title)
+        dispatch(advanced ? "mini2.advanced." + event.rawValue : (event == .connection ? MicButton.link.rawValue : MicButton.power.rawValue), name: event.title)
     }
-    private func dispatch(_ button: MicButton, name: String) {
+    private func dispatch(_ button: String, name: String) {
         eventCounts[button, default: 0] &+= 1
         lastEvent = "最近：" + name
-        guard !editing, let shortcut = settings.bindings[button.rawValue], shortcut.isValid else { return }
+        guard !editing, let shortcut = settings.bindings[button], shortcut.isValid else { return }
         refreshPermission()
         guard trusted else { lastEvent = name + " · 需要辅助功能授权"; return }
         guard let source = CGEventSource(stateID: .privateState),
@@ -116,9 +121,16 @@ struct ButtonShortcutSettingsView: View {
 
 struct ButtonMappingPanel: View {
     let model: MicModel
-    private var buttons: [MicButton] { model.usesMiniSPP ? [.link, .power] : [.link, .power, .record] }
-    private func title(_ button: MicButton) -> String {
-        model.usesMiniSPP ? (button == .link ? "连接键单击" : "电源键\(model.miniPowerGesture)") : button.shortcutTitle
+    var advanced = false
+    private var buttons: [String] {
+        advanced ? ["connection", "connectionDouble", "powerSingle", "powerDouble"].map { "mini2.advanced." + $0 }
+        : (model.usesMiniSPP ? ["link", "power"] : ["link", "power", "record"])
+    }
+    private func title(_ button: String) -> String {
+        if advanced {
+            return ["mini2.advanced.connection": "连接键单击", "mini2.advanced.connectionDouble": "连接键双击", "mini2.advanced.powerSingle": "电源键单击", "mini2.advanced.powerDouble": "电源键双击"][button] ?? button
+        }
+        return model.usesMiniSPP ? (button == "link" ? "连接键单击" : "电源键\(model.miniPowerGesture)") : (MicButton(rawValue: button)?.shortcutTitle ?? button)
     }
     @ObservedObject var shortcuts: ButtonShortcuts
     let available: Bool
@@ -131,9 +143,9 @@ struct ButtonMappingPanel: View {
     let modeStatus: String
     let canChangeMode: Bool
     let setHotkey: (Bool) -> Void
-    @State private var editingButton: MicButton?
-    private func symbol(_ button: MicButton) -> String {
-        switch button { case .link: return "link"; case .power: return "power"; case .record: return "record.circle" }
+    @State private var editingButton: String?
+    private func symbol(_ button: String) -> String {
+        if button.contains("connection") || button == "link" { return "link" }; return button == "record" ? "record.circle" : "power"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -142,7 +154,7 @@ struct ButtonMappingPanel: View {
                     .frame(width: 40, height: 40).background(Color.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
                 VStack(alignment: .leading, spacing: 7) {
                     Text("麦克风按键映射").font(.system(size: 19, weight: .bold))
-                    Text(model.usesMiniSPP ? "连接键单击与电源键\(model.miniPowerGesture)触发快捷键；后者仍切换降噪" : "启用后，短按仅触发快捷键，不再执行连接、降噪或录音操作").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                    Text(advanced ? "单击、双击独立触发快捷键；长按电源仍可关机" : model.usesMiniSPP ? "连接键单击与电源键\(model.miniPowerGesture)触发快捷键；后者仍切换降噪" : "启用后，短按仅触发快捷键，不再执行连接、降噪或录音操作").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer(minLength: 0)
                 HStack(spacing: 8) {
@@ -150,7 +162,7 @@ struct ButtonMappingPanel: View {
                     Text("启用映射").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
                     Toggle("启用映射", isOn: Binding(get: { hotkeyEnabled }, set: setHotkey))
                         .labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(!canChangeMode)
-                        .help(model.usesMiniSPP ? "只启用或暂停快捷键发送，保留原按键功能" : "启用后短按仅触发快捷键，关闭后恢复原按键功能")
+                        .help(model.usesMiniSPP && !advanced ? "只启用或暂停快捷键发送，保留原按键功能" : "启用后短按仅触发快捷键，关闭后恢复原按键功能")
                 }.fixedSize().padding(.top, 2)
             }.padding(.bottom, 20)
             HStack {
@@ -159,8 +171,8 @@ struct ButtonMappingPanel: View {
                 Text("键盘快捷键").frame(width: 166, alignment: .leading)
             }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.bottom, 10)
             Divider().opacity(0.35)
-            ForEach(buttons, id: \.rawValue) { button in
-                mappingRow(button).frame(minHeight: 66)
+            ForEach(buttons, id: \.self) { button in
+                mappingRow(button).frame(minHeight: advanced ? 56 : 66)
                 Divider().opacity(0.3)
             }
             Spacer(minLength: 14)
@@ -176,7 +188,7 @@ struct ButtonMappingPanel: View {
         }.frame(minHeight: 360, maxHeight: .infinity, alignment: .top)
             .sheet(isPresented: Binding(get: { editingButton != nil }, set: { if !$0 { editingButton = nil; shortcuts.editing = false } })) {
                 if let button = editingButton {
-                ShortcutEditor(button: button, title: title(button), initial: shortcuts.settings.bindings[button.rawValue]) { value in
+                ShortcutEditor(button: MicButton(rawValue: button) ?? .link, title: title(button), initial: shortcuts.settings.bindings[button]) { value in
                     shortcuts.bind(button, to: value); editingButton = nil; shortcuts.editing = false
                 } cancel: { editingButton = nil; shortcuts.editing = false }
                 .padding(18).frame(width: 420).background(bridgeCanvas)
@@ -197,8 +209,8 @@ struct ButtonMappingPanel: View {
             .background(Color.blue.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.blue.opacity(0.09)))
     }
-    private func mappingRow(_ button: MicButton) -> some View {
-        let value = shortcuts.settings.bindings[button.rawValue]
+    private func mappingRow(_ button: String) -> some View {
+        let value = shortcuts.settings.bindings[button]
         let unset = value == nil
         return GeometryReader { geometry in
         HStack(spacing: 12) {

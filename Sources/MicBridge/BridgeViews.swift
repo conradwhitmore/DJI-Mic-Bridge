@@ -250,11 +250,11 @@ struct BridgeWindow: View {
     }
     private var mappingCard: some View {
         ReferenceCard {
-            ButtonMappingPanel(model: model.model, shortcuts: model.buttonShortcuts,
+            ButtonMappingPanel(model: model.model, advanced: model.advancedLayout, shortcuts: model.buttonShortcuts,
                 available: model.preview || model.selected?.model.adapter != nil,
                 connected: model.phase == .streaming, canConnect: model.canConnect,
                 connect: { model.connect() }, hotkeyEnabled: model.hotkeyEnabled,
-                hotkeyActive: model.hotkeyActive, modeBusy: model.keyMode.busy,
+                hotkeyActive: model.hotkeyActive, modeBusy: model.keyMode.busy || model.miniPatch.busy,
                 modeStatus: model.hotkeyStatus, canChangeMode: model.canChangeHotkey,
                 setHotkey: { model.setHotkey($0) })
         }
@@ -307,13 +307,13 @@ struct BridgeWindow: View {
                             .background(panel, in: RoundedRectangle(cornerRadius: 10))
                             .overlay(RoundedRectangle(cornerRadius: 10).stroke(subtle.opacity(0.6)))
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden)
-                        .disabled(model.hfpBusy || model.active || model.captureBlocked || model.importing || model.readingMini2Firmware || model.devices.isEmpty)
+                        .disabled(model.firmwareWorkflowActive || model.hfpBusy || model.active || model.captureBlocked || model.importing || model.readingMini2Firmware || model.devices.isEmpty)
                         .accessibilityLabel("发射器").help(model.name)
                     Button { model.refresh() } label: {
                         Image(systemName: "arrow.clockwise").font(.system(size: 15))
                             .frame(width: 38, height: 38)
                     }.buttonStyle(ReferenceButtonStyle())
-                        .disabled(model.hfpBusy || model.active || model.closing || model.refreshing || model.preview || model.captureBlocked || model.importing)
+                        .disabled(model.firmwareWorkflowActive || model.hfpBusy || model.active || model.closing || model.refreshing || model.preview || model.captureBlocked || model.importing)
                         .accessibilityLabel("刷新列表").help("刷新已配对设备列表（⌘⇧R）")
                 }
                 Button {
@@ -457,7 +457,9 @@ struct BridgeWindow: View {
         VStack(alignment: .leading, spacing: 18) {
             if model.model.usesMiniSPP {
                 MiniAudioSettingsCard(model: model.model, state: model.miniAudio, connected: model.active,
-                    editable: model.canChangeMiniAudio, setNoise: model.setMiniNoise, setTone: model.setMiniTone)
+                    editable: model.canChangeMiniAudio, setNoise: model.setMiniNoise, setTone: model.setMiniTone,
+                    advancedStatus: model.advancedStatus,
+                    openFirmware: model.openMini2Firmware)
             }
             if model.model == .mic2 {
                 ReferenceCard {
