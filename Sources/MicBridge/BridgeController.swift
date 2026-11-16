@@ -299,11 +299,13 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
         return recording ? "正在保存声音。" : phase == .streaming ? "点击开始录音，保存这段声音。" : "等待音频输入，或连接 SPP 开始收音。"
     }
     var elapsed: String { String(format: "%02d:%02d.%01d", Int(seconds)/60, Int(seconds)%60, Int(seconds*10)%10) }
-    private var showSPPExit: Bool { exitConfirmed && !active && !hfpBusy && bluetoothConnected }
+    private var showSPPExit: Bool { model != .mini2 && exitConfirmed && !active && !hfpBusy && bluetoothConnected }
     var connectionLabel: String { exitPolicy.failed && active ? "未能断开 SPP" : showSPPExit ? "SPP 已断开" : phase.title }
     var connectionDetail: String {
         if exitPolicy.failed && active { return "退出指令未完成，详情请查看高级诊断。" }
-        if exitConfirmed && !active && !hfpBusy { return "建议将发射器关机再开机，再使用普通蓝牙录音，恢复更稳妥。" }
+        if exitConfirmed && !active && !hfpBusy {
+            return model == .mini2 ? "可切换到系统原生输入，或再次连接 SPP。" : "建议将发射器关机再开机，再使用普通蓝牙录音，恢复更稳妥。"
+        }
         if phase == .closeUnconfirmed { return "连接未能正常结束，详情请查看高级诊断。" }
         return phase.detail
     }
@@ -743,7 +745,7 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
                     self.exitConfirmed = true; self.exitStatus = "SPP 已断开"
                 }
                 else if ended.endedByLinkLoss { self.exitStatus = "蓝牙已断开；未据此确认 HFP 恢复。" }
-                if self.terminating && self.terminationRestoresHFP && !exitWasAcknowledged && !ended.endedByLinkLoss {
+                if self.terminating && self.terminationRestoresHFP && ended.model != .mini2 && !exitWasAcknowledged && !ended.endedByLinkLoss {
                     self.terminating = false
                     self.exitStatus = "通道已异常结束，未完成 12/65 应答确认；本次退出已取消。"
                     self.finishedTermination?(false); self.showWindowAction?()
@@ -813,6 +815,16 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
     private func driveControlActions() {
         guard let session else { return }
         if exitPending || localClosePending {
+            if session.mini2AudioInterrupted, !session.isClosing {
+                // SPP may stop carrying both audio and control after native HFP
+                // activity. Do not wait for key-mode/12/65 replies on that path.
+                // r2 clears its temporary key mode when the SPP channel closes;
+                // this is local recovery, not acknowledged restoration of HFP.
+                localClosePending = false
+                exitStatus = "音频已中断，正在关闭本地 SPP 通道以便重新连接…"
+                session.stop("Mini 2 音频中断，释放本地 SPP 会话")
+                return
+            }
             guard restoreButtonsBeforeClosing(session) else { return }
             if localClosePending {
                 localClosePending = false; session.stop("App 退出"); return
@@ -828,9 +840,11 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
                 catch { failAcknowledgedExit(error.localizedDescription) }
             case .closeChannel:
                 exitStatus = "已收到 12/65 ACK 00，正在关闭 SPP 通道…"
-                beginRecovery(); session.closeAfterAcknowledgedExit(); sync()
+                if session.model != .mini2 { beginRecovery() }
+                session.closeAfterAcknowledgedExit(); sync()
             case .fail:
-                failAcknowledgedExit("未取得 12/65 成功回应；SPP 保持连接。" + controlStatus)
+                let outcome = session.model == .mini2 ? "关闭本地 SPP 会话。" : "SPP 保持连接。"
+                failAcknowledgedExit("未取得 12/65 成功回应；" + outcome + controlStatus)
             }
             return
         }
@@ -874,6 +888,13 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
         }
     }
     private func failAcknowledgedExit(_ message: String) {
+        if let session, session.model == .mini2 {
+            // A missing command reply does not prevent releasing the local Mini 2 session.
+            // Completion keeps the unacknowledged exit distinct from HFP restoration.
+            exitStatus = message
+            session.stop("Mini 2 本地退出：" + message)
+            return
+        }
         session?.cancelMiniPatchExit()
         exitPolicy.fail(); exitPending = false
         exitStatus = message; status = message
@@ -1035,7 +1056,7 @@ final class BridgeController: NSObject, ObservableObject, AVAudioPlayerDelegate 
         if hfpBusy { stopHFPTest() }
         stopPlayback()
         if session != nil {
-            if terminationRestoresHFP && closing && !exitPolicy.closeAuthorized {
+            if model != .mini2 && terminationRestoresHFP && closing && !exitPolicy.closeAuthorized {
                 exitStatus = "SPP 已在关闭，无法补发 12/65；请等待关闭结果，必要时重启发射器。"
                 showWindowAction?(); return .terminateCancel
             }

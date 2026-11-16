@@ -32,6 +32,7 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
         if result != 0 { commandBuffers.removeAll { $0 === data }; pendingWrite = nil }
     }
     private var sdpPending = false
+    private var openRequested = false
     var mini2Hotkey: ((Mini2Hotkey) -> Void)?
     var mini2Status: ((Mini2SPPStatus) -> Void)?
     let device: IOBluetoothDevice
@@ -76,6 +77,9 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
     var isRecording: Bool { recorder.isRecording }
     var isClosing: Bool { stopping }
     var canRecord: Bool { openedAt != nil && lastRX != nil && !stopping }
+    var mini2AudioInterrupted: Bool {
+        model == .mini2 && openedAt != nil && now - (lastRX ?? openedAt ?? now) > 5
+    }
     private let routes: AudioRoutes
     private var channels: [UInt64: IOBluetoothRFCOMMChannel] = [:]
     private var closeNotifications: [UInt64: IOBluetoothUserNotification] = [:]
@@ -88,6 +92,7 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private(set) var endedByLinkLoss = false
     private var level: Float = 0
     private var finalReason = "", routeFailure: String?
+    private var nativeAudioObserved = false
     private var events: [[String: Any]] = []
 #if HFP_DIAGNOSTIC
     private var hfpLease = HFPDiagnosticLease()
@@ -152,12 +157,15 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
     }
     func start() throws {
         guard device.isConnected() else { throw StreamError.invalid("请先在 macOS 蓝牙设置连接发射器") }
-        try routes.lock()
+        try routes.lock(allowTargetAudio: model == .mini2)
         record("audio_routes_locked", ["description": routes.description])
         linkHandle = device.connectionHandle
         created = now
         update?("准备 SPP · \(routes.description)", 0, 0, 0)
         ensureTimer()
+        // Mini 2 waits for native input to settle in tick(), after selecting the
+        // virtual input. Do not fail or open RFCOMM while HFP is still running.
+        if model == .mini2 { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.stopping else { return }
             do { try self.routes.check(requirePresent: true) }
@@ -188,6 +196,7 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
         openChannel(channel)
     }
     private func openChannel(_ channel: BluetoothRFCOMMChannelID) {
+        openRequested = true
         shutdown.openingStarted()
         record("open_requested", ["channel": channel, "model": model.rawValue])
         var requested: IOBluetoothRFCOMMChannel?
@@ -224,7 +233,7 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
             retireForLinkLoss(); return
         }
         if stopping {
-            do { try routes.check(requirePresent: false) }
+            do { try routes.check(requirePresent: false, allowTargetAudio: model == .mini2) }
             catch {
                 let text = error.localizedDescription
                 if routeFailure != text { routeFailure = text; record("route_restore_failed", ["error": text]) }
@@ -247,12 +256,36 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
             }
         }
         let allowInput = hfpLease.allowsInput(now: now)
-        do { try routes.check(requirePresent: true, allowTargetAudio: allowInput || now < hfpRecoveryUntil,
+        do { try routes.check(requirePresent: true, allowTargetAudio: model == .mini2 || allowInput || now < hfpRecoveryUntil,
                               allowDefaultInput: allowInput) }
         catch { stop(error.localizedDescription); return }
 #else
-        do { try routes.check(requirePresent: true) } catch { stop(error.localizedDescription); return }
+        // Native audio activity alone is not evidence of RFCOMM closure.
+        // Continue protecting the default input, but do not tear down an open
+        // RFCOMM channel merely because another process briefly uses HFP.
+        do { try routes.check(requirePresent: true, allowTargetAudio: model == .mini2) }
+        catch { stop(error.localizedDescription); return }
 #endif
+        if model == .mini2, !openRequested {
+            if now - created > 12 {
+                stop(routes.targetAudioActive ? "系统麦克风仍被占用，未打开 SPP；释放占用后可重试" : "SPP 服务查询超时")
+                return
+            }
+            if routes.targetAudioActive {
+                update?("等待系统麦克风释放 · 尚未打开 SPP", 0, 0, 0)
+                return
+            }
+            if now - created >= 3, !sdpPending {
+                sdpPending = true; record("sdp_requested")
+                let status = device.performSDPQuery(self)
+                if status != 0 { stop("SDP 请求失败：\(status)") }
+            }
+            return
+        }
+        if model == .mini2, openedAt != nil, nativeAudioObserved != routes.targetAudioActive {
+            nativeAudioObserved = routes.targetAudioActive
+            record("native_audio_activity", ["active": nativeAudioObserved, "action": "preserve_spp"])
+        }
         driveMiniPatch()
         if let openedAt {
             if now >= nextControlDiagnostic {
@@ -267,6 +300,13 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
 #if HFP_DIAGNOSTIC
                 if now < hfpRecoveryUntil { return }
 #endif
+                if model == .mini2 {
+                    // As in Mini2Demo, silence is not proof that RFCOMM closed.
+                    // Keep control/close available; actual link loss and close
+                    // callbacks still terminate the session.
+                    update?("SPP 音频暂停 · 等待恢复，可手动断开重连", savedSeconds, 0, presses)
+                    return
+                }
                 stop("连续 5 秒未收到音频"); return
             }
             let seconds = isRecording ? Double(recorder.samples) / 48000 : savedSeconds
@@ -422,6 +462,7 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
 #if HFP_DIAGNOSTIC
         endHFPDiagnostic("bluetooth_link_lost")
 #endif
+        routes.endOutputProtection()
         retired = true; endedByLinkLoss = true; stopping = true
         openWork?.cancel(); openWork = nil
         timer?.invalidate(); timer = nil
@@ -443,9 +484,10 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
     }
     // BEGIN MICBRIDGE ACK EXIT
     /// Product completion rule: a validated 12/65 ACK authorizes local teardown.
-    /// Keep the notification-based path below for unrelated transport failures.
+    /// Mini 2 local release also completes without a close notification.
     func closeAfterAcknowledgedExit() {
         guard exitAcknowledged, !retired, !completed else { return }
+        routes.endOutputProtection()
         stopping = true; retired = true
         openWork?.cancel(); openWork = nil
         timer?.invalidate(); timer = nil
@@ -477,23 +519,48 @@ final class MicSession: NSObject, IOBluetoothRFCOMMChannelDelegate {
 #endif
         if !device.isConnected() { retireForLinkLoss(); return }
         if reason != "SPP 通道已关闭" && reason != "用户断开 SPP" && reason != "App 退出" { unexpectedStop?() }
+        routes.endOutputProtection()
         stopping = true; stoppedAt = now; finalReason = reason
         openWork?.cancel(); openWork = nil
         stopRecording(reason)
         record("stop_requested", ["reason": reason])
+        if model == .mini2 {
+            // Mini 2 often supplies no macOS close notification. A user-visible
+            // disconnect disposes this local session; it does not assert a
+            // device-side 12/65 ACK or restoration of native audio.
+            retired = true
+            timer?.invalidate(); timer = nil
+            for notice in closeNotifications.values { notice.unregister() }
+            closeNotifications.removeAll()
+            for (id, channel) in channels {
+                _ = channel.setDelegate(nil)
+                record("close_requested", ["object_id": id])
+                let status = channel.close()
+                record("close_returned", ["object_id": id, "status": Int(status)])
+            }
+            channels.removeAll(); queryChannel = nil
+            completed = true
+            record("connection_finished", ["reason": reason, "completion_basis": "mini2_local_release",
+                "device_exit_acknowledged": exitAcknowledged, "recovery_required": false])
+            let callback = complete; complete = nil
+            callback?(self, "SPP 已断开", false)
+            return
+        }
         update?("\(reason) · 正在确认 SPP 关闭…", savedSeconds, 0, presses)
         ensureTimer()
         shutdown.stop(now: now)
     }
     private func finish(_ outcome: RFCOMMCloseCoordinator.Outcome) {
         guard !completed else { return }; completed = true
+        routes.endOutputProtection()
         timer?.invalidate(); timer = nil
         let unconfirmed = outcome == .unconfirmed
         if !unconfirmed {
+            retired = true
             for notice in closeNotifications.values { notice.unregister() }
             closeNotifications.removeAll()
             for channel in channels.values { _ = channel.setDelegate(nil) }
-            channels.removeAll()
+            channels.removeAll(); queryChannel = nil
         }
         // On timeout the App retains this session and its delegate, so a late-open
         // callback can still request bounded cleanup. No new capture is allowed.

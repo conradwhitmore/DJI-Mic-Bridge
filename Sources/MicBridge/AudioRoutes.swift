@@ -9,8 +9,80 @@ final class AudioRoutes {
     private var locked: [AudioObjectPropertySelector: AudioObjectID] = [:]
     private var lockedUIDs: [AudioObjectID: String] = [:]
     private(set) var description = ""
-    // Only the default input is managed; output and alert routes belong to the user.
+    private(set) var targetAudioActive = false
+    // Input stays on the bridge; output protection accepts every non-DJI choice.
     private let selectors: [AudioObjectPropertySelector] = [kAudioHardwarePropertyDefaultInputDevice]
+    private let outputSelectors: [AudioObjectPropertySelector] = [kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioHardwarePropertyDefaultSystemOutputDevice]
+    private var outputUIDs: [AudioObjectPropertySelector: String] = [:]
+    private var outputListeners: [AudioObjectPropertySelector: AudioObjectPropertyListenerBlock] = [:]
+    private var outputProtection = false
+    private var updatingOutputs = false
+    deinit { endOutputProtection() }
+    func endOutputProtection() {
+        outputProtection = false
+        for (selector, listener) in outputListeners {
+            var address = property(selector)
+            AudioObjectRemovePropertyListenerBlock(system, &address, DispatchQueue.main, listener)
+        }
+        outputListeners.removeAll()
+    }
+    private func beginOutputProtection() {
+        guard !outputProtection else { return }
+        outputProtection = true
+        for selector in outputSelectors {
+            let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                guard let self, self.outputProtection else { return }
+                // Periodic session checks report failures; this listener minimizes
+                // the interval in which a newly selected DJI output can remain active.
+                try? self.protectOutputs()
+            }
+            var address = property(selector)
+            if AudioObjectAddPropertyListenerBlock(system, &address, DispatchQueue.main, listener) == noErr {
+                outputListeners[selector] = listener
+            }
+        }
+    }
+    private func protectOutputs() throws {
+        guard outputProtection, !updatingOutputs else { return }
+        updatingOutputs = true
+        defer { updatingOutputs = false }
+        let candidates = try devices().compactMap { id -> SPPOutputSelection.Candidate? in
+            guard hasStream(id, input: false), try integer(id, kAudioDevicePropertyDeviceIsAlive) == 1,
+                  try !isDJI(id) else { return nil }
+            let uid = try string(id, kAudioDevicePropertyDeviceUID)
+            return .init(id: id, uid: uid,
+                builtIn: (try? integer(id, kAudioDevicePropertyTransportType)) == kAudioDeviceTransportTypeBuiltIn,
+                fallback: !VirtualInputIdentity.isLoopbackUID(uid))
+        }
+        var failures: [String] = []
+        for selector in outputSelectors {
+            do {
+                let current = try integer(system, selector)
+                guard let chosen = SPPOutputSelection.choose(candidates, current: current, previousUID: outputUIDs[selector]),
+                      let candidate = candidates.first(where: { $0.id == chosen }) else {
+                    throw StreamError.invalid("没有可用的非 DJI 输出设备")
+                }
+                if current != chosen {
+                    // Respect an allowed selection made while enumerating devices.
+                    let latest = try integer(system, selector)
+                    if let allowed = candidates.first(where: { $0.id == latest }) {
+                        outputUIDs[selector] = allowed.uid; continue
+                    }
+                    var address = property(selector), value = chosen
+                    guard AudioObjectSetPropertyData(system, &address, 0, nil, 4, &value) == noErr else {
+                        throw StreamError.invalid("无法将 DJI 输出切回其他设备")
+                    }
+                    let actual = try integer(system, selector)
+                    guard let accepted = candidates.first(where: { $0.id == actual }) else {
+                        throw StreamError.invalid("非 DJI 输出切换未生效")
+                    }
+                    outputUIDs[selector] = accepted.uid
+                } else { outputUIDs[selector] = candidate.uid }
+            } catch { failures.append(error.localizedDescription) }
+        }
+        if !failures.isEmpty { throw StreamError.invalid(failures.joined(separator: "；")) }
+    }
     init(target: String) { self.target = Self.normalized(target) }
     static func normalized(_ s: String) -> String { s.uppercased().filter { $0 != ":" && $0 != "-" } }
     func property(_ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
@@ -76,10 +148,10 @@ final class AudioRoutes {
         }
         return selected
     }
-    func lock() throws {
+    func lock(allowTargetAudio: Bool = false) throws {
         let all = try devices()
         for device in all where try isTarget(device) {
-            guard try integer(device, kAudioDevicePropertyDeviceIsRunningSomewhere) == 0 else {
+            guard try allowTargetAudio || integer(device, kAudioDevicePropertyDeviceIsRunningSomewhere) == 0 else {
                 throw StreamError.invalid("Mic 2 正被系统音频使用。请退出录音软件和声音输入电平页，再试。")
             }
         }
@@ -87,20 +159,23 @@ final class AudioRoutes {
         let chosen = try preferredInput(all, current: integer(system, selector))
         lockedUIDs[chosen] = try string(chosen, kAudioDevicePropertyDeviceUID)
         locked[selector] = chosen
-        try check(requirePresent: true)
+        beginOutputProtection()
+        try check(requirePresent: true, allowTargetAudio: allowTargetAudio)
         description = "系统输入：\(try string(chosen, kAudioObjectPropertyName))"
     }
     func check(requirePresent: Bool, allowTargetAudio: Bool = false, allowDefaultInput: Bool = false) throws {
         // Record the unsafe condition, but still restore every available default.
         // Activity detection must not bypass the recovery path.
         var observationError: Error?
+        targetAudioActive = false
         do {
             let all = try devices()
             var present = false
             for device in all where try isTarget(device) {
                 present = true
-                if try integer(device, kAudioDevicePropertyDeviceIsRunningSomewhere) != 0 && !allowTargetAudio {
-                    observationError = StreamError.invalid("检测到 Mic 2 系统音频活动，已停止 SPP")
+                if try integer(device, kAudioDevicePropertyDeviceIsRunningSomewhere) != 0 {
+                    targetAudioActive = true
+                    if !allowTargetAudio { observationError = StreamError.invalid("检测到 Mic 2 系统音频活动，已停止 SPP") }
                 }
             }
             if requirePresent && !present { observationError = StreamError.invalid("Mic 2 音频设备已离线") }
@@ -116,7 +191,7 @@ final class AudioRoutes {
     func restoreLockedDefaults(allowDefaultInput: Bool = false) throws {
         // Keep the preferred bridge as the actual lock target, including after
         // Bluetooth reconnects. Re-evaluate driver availability without opening
-        // any hardware input. Output and alert routes are never restored.
+        // any hardware input. Outputs track the user's latest non-DJI selection.
         var inputSelectionError: Error?
         if !allowDefaultInput {
             do {
@@ -147,8 +222,37 @@ final class AudioRoutes {
                 }
             })
         var messages = failures.map(\.message)
+        do { try protectOutputs() } catch { messages.append(error.localizedDescription) }
         if let inputSelectionError { messages.append(inputSelectionError.localizedDescription) }
         if !messages.isEmpty { throw StreamError.invalid(messages.joined(separator: "；")) }
+    }
+    struct OutputDevice {
+        let uid: String
+        let name: String
+        let isDJI: Bool
+        let selected: Bool
+    }
+    func outputDevices() throws -> [OutputDevice] {
+        let current = try integer(system, kAudioHardwarePropertyDefaultOutputDevice)
+        return try devices().compactMap { id in
+            guard hasStream(id, input: false), try integer(id, kAudioDevicePropertyDeviceIsAlive) == 1 else { return nil }
+            return OutputDevice(uid: try string(id, kAudioDevicePropertyDeviceUID),
+                name: try string(id, kAudioObjectPropertyName), isDJI: try isDJI(id), selected: id == current)
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+    func selectOutput(uid: String, excludingDJI: Bool) throws {
+        guard let id = try devices().first(where: { try string($0, kAudioDevicePropertyDeviceUID) == uid }),
+              hasStream(id, input: false), try integer(id, kAudioDevicePropertyDeviceIsAlive) == 1 else {
+            throw StreamError.invalid("输出设备已不可用，请重新选择")
+        }
+        guard try !excludingDJI || !isDJI(id) else {
+            throw StreamError.invalid("SPP 连接期间不能选择 DJI 输出")
+        }
+        var address = property(kAudioHardwarePropertyDefaultOutputDevice), value = id
+        guard AudioObjectSetPropertyData(system, &address, 0, nil, 4, &value) == noErr,
+              try integer(system, kAudioHardwarePropertyDefaultOutputDevice) == id else {
+            throw StreamError.invalid("无法切换输出设备")
+        }
     }
     static func checkPlaybackOutput() throws {
         let reader = AudioRoutes(target: "unused")

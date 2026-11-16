@@ -210,7 +210,11 @@ struct BridgeWindow: View {
         .alert("断开 SPP？", isPresented: $confirmDisconnect) {
             Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
             Button("断开", role: .destructive) { model.disconnect() }
-        } message: { Text("结束录音并断开 SPP。退出后建议将发射器关机再开机，再使用普通蓝牙录音。") }
+        } message: {
+            Text(model.model == .mini2
+                 ? "结束录音并退出 SPP。完成后可使用系统原生输入，或再次连接 SPP。"
+                 : "结束录音并断开 SPP。退出后建议将发射器关机再开机，再使用普通蓝牙录音。")
+        }
 
     }
     private var stateColor: Color {

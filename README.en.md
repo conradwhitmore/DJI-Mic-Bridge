@@ -10,7 +10,7 @@ A native macOS app that receives audio directly from a **DJI Mic 2 / Mic Mini / 
 
 *Screenshot of MicBridge in use, with the device-name suffix redacted; showing SPP audio reception, battery level, button mappings, and live audio monitoring.*
 
-Main's **0.6.0 development build** adds optional Mini 2 MBRG r2 support: four independent single/double-click hotkeys, enabled only after a fresh SPP capability response. Device Information contains an expandable advanced-mode section and a separate firmware window for installing r2 or restoring the exact official 02.03.17.00 image, with preparation steps, progress and percentage. The main mapping toggle alone controls the temporary button mode after capability detection. Complete DJI firmware is not bundled. The new app flashing flow requires hardware acceptance separately from the successful Demo tests; restoration requires working BLE and is not a brick-recovery method. See [usage](docs/USAGE.md).
+Main's **0.6.1 development build** adds optional Mini 2 MBRG r2 support: four independent single/double-click hotkeys, enabled only after a fresh SPP capability response. Device Information contains an expandable advanced-mode section and a separate firmware window for installing r2 or restoring the exact official 02.03.17.00 image, with preparation steps, progress and percentage. The main mapping toggle alone controls the temporary button mode after capability detection. Complete DJI firmware is not bundled. The new app flashing flow requires hardware acceptance separately from the successful Demo tests; restoration requires working BLE and is not a brick-recovery method. See [usage](docs/USAGE.md).
 
 ## Features
 
@@ -20,9 +20,28 @@ Main's **0.6.0 development build** adds optional Mini 2 MBRG r2 support: four in
 - Mic 2 per-device mapping preference applied on connection; disabling it restores the original button functions. Long-press power-off remains available.
 - Mic 2 app-controlled noise reduction with readback verification, usable alongside hotkey mode.
 - Mic 2 firmware and battery queries; battery refreshes every two minutes after the initial query.
-- Restore ordinary button functions before quitting; quit for now without `12/65`, or restore ordinary microphone mode with acknowledged `12/65` shutdown. Menu bar residence and login-item configuration are included.
+- Mic 2 retains its two quit choices. Mini 2 uses one quit flow that restores button functions and attempts SPP exit; local teardown does not wait for an RFCOMM close notification.
+- During SPP connection only, keep the default input on MicBridge Audio and reject DJI output/alert routes while accepting other outputs. Disconnecting releases protection.
+- Left- or right-click the menu bar icon to open the menu and select an output device.
 
 Mic 2 (firmware 04.05.02.31) and Mini 2 (Demo-tested firmware 02.03.17.00) have separate SPP adapters. First-generation Mini now shares the Mini-family SPP adapter based on firmware 02.03.17.00 analysis; hardware validation is pending. Its connection and power hotkeys both use a single click; the power hotkey is also inferred from actual noise-reduction changes. Mic 3 remains a placeholder. Mini 2 maps a connection-button single click and a power-button double click; the latter is inferred from a noise-reduction state change and still changes actual noise reduction. Its mapping toggle only controls shortcut dispatch, without factory mode. On main, Advanced Diagnostics adds Off/Basic/Strong noise reduction for both Mini generations and Standard/Rich/Bright voice tone for Mini 2; these new controls still require hardware validation. Battery percentages are estimates derived from seven SPP status bands. Before the first connection, the app attempts a read-only BLE firmware query, caches the result per device, and disconnects BLE before opening SPP. Cached connections skip BLE. Deployment target: macOS 13+, with Xcode / Swift 5.10+ required to build. Hardware and OS coverage is limited; see [validation](docs/VALIDATION.md).
+
+## Device support on main
+
+This describes development **0.6.1**, not all features in the published 0.5.1 installers.
+
+| Device / firmware | Validation | SPP audio | Hotkeys | Battery / firmware | Audio settings |
+| --- | --- | --- | --- | --- | --- |
+| Mic 2 / 04.05.02.31 | Core features hardware-tested | 48 kHz mono | Three independent short presses; long-press power-off preserved | SPP percentage / SPP query | Noise reduction on/off tested |
+| Mic Mini (first generation) / 02.03.17.00 | Firmware-based implementation; no hardware validation | 48 kHz path implemented, unverified | Connection single press and power single press; power inferred from noise-reduction changes | SPP bands / BLE query and cache, unverified | Off/basic/strong noise reduction unverified; no tone controls |
+| Mic Mini 2 stock / 02.03.17.00 | Audio, two hotkeys and metadata tested | 48 kHz mono | Connection single press and power double press; latter still toggles noise reduction | SPP bands / BLE query and cache | Off/basic/strong noise reduction and standard/rich/bright tone; new controls and all settings need full acceptance |
+| Mic Mini 2 + MBRG r2 | Demo four-key/audio/restoration tests passed; integrated into App | 48 kHz mono, recording while pressing keys tested | Four independent single/double-click events; long-press power-off preserved | Same metadata path; patch capability checked each SPP session | Same settings; App controls noise reduction during key mode |
+| Mic Mini 2S | Firmware research only; not integrated | Unsupported | Unsupported | Unsupported | Unsupported |
+| Mic 3 | Model listing only | Unsupported | Unsupported | Unsupported | Unsupported |
+
+Four-key mode requires the patch. Complete DJI firmware is not distributed, and the App flashing window still needs separate hardware acceptance. Mini battery percentages are band estimates; cached firmware is not queried live every session. The 48 kHz claim applies to SPP, not native HFP.
+
+Mic 2 MTU 666 remains unresolved. After HFP interference, Mini 2 may need another connection attempt; local teardown is not a complete reconnection fix. Default route protection cannot prevent another application from directly opening DJI endpoints.
 
 ## Cloud builds and releases
 

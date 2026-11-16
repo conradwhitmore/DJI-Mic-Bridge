@@ -18,4 +18,4 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run(['/usr/bin/patch', '-s', '-F', '0', '-o', str(result), str(source)],
                    input=(root / 'scripts/micbridge-routes.patch').read_bytes(), check=True)
     assert (root / 'Sources/MicBridge/AudioRoutes.swift').read_bytes() == result.read_bytes(), 'Unreviewed route change' 
-print('Transport verified against ACK-exit, audio-gap and Mini family adapter patches; Demo query extensions isolated; route patch manages verified MicBridge Audio/BlackHole inputs only and leaves output/alert routes unchanged.')
+print('Transport verified against ACK-exit, audio-gap and Mini family adapter patches; Demo query extensions isolated; route patch prefers verified MicBridge Audio/BlackHole inputs and protects SPP output/alert routes while accepting non-DJI selections.')

@@ -235,25 +235,59 @@ final class BridgeAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         } else { model.connect() }
     }
     @objc private func importCapture() { if commandEnabled(#selector(importCapture)) { showWindow(); model.importCapture() } }
-    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
-        guard let event = NSApp.currentEvent else { showWindow(); return }
-        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
-            let menu = NSMenu()
-            func add(_ title: String, _ action: Selector, key: String = "", modifiers: NSEvent.ModifierFlags = [.command], target: AnyObject? = nil) {
-                let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
-                entry.keyEquivalentModifierMask = modifiers
-                entry.target = target ?? self
+    private func outputDeviceMenu() -> NSMenuItem {
+        let parent = NSMenuItem(title: "输出设备", action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: "输出设备"); menu.autoenablesItems = false
+        let reader = AudioRoutes(target: model.selectedID.isEmpty ? "unused" : model.selectedID)
+        do {
+            for device in try reader.outputDevices() {
+                let entry = NSMenuItem(title: device.name, action: #selector(selectOutputDevice(_:)), keyEquivalent: "")
+                entry.target = self; entry.representedObject = device.uid
+                entry.state = device.selected ? .on : .off
+                entry.isEnabled = !model.preview && !(model.active && device.isDJI)
+                if model.active && device.isDJI { entry.toolTip = "SPP 连接期间不可使用 DJI 输出" }
                 menu.addItem(entry)
             }
-            add("打开主窗口", #selector(showWindow), key: "0")
-            menu.addItem(.separator())
-            add("设置…", #selector(showSettings), key: ",")
-            menu.addItem(.separator())
-            add("退出 MicBridge", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
-            NSMenu.popUpContextMenu(menu, with: event, for: sender)
-        } else {
-            showWindow()
+            if menu.items.isEmpty {
+                let entry = NSMenuItem(title: "没有可用输出设备", action: nil, keyEquivalent: "")
+                entry.isEnabled = false; menu.addItem(entry)
+            }
+        } catch {
+            let entry = NSMenuItem(title: "无法读取输出设备", action: nil, keyEquivalent: "")
+            entry.isEnabled = false; menu.addItem(entry)
         }
+        parent.submenu = menu
+        return parent
+    }
+    @objc private func selectOutputDevice(_ sender: NSMenuItem) {
+        guard !model.preview, let uid = sender.representedObject as? String else { return }
+        do {
+            let routes = AudioRoutes(target: model.selectedID.isEmpty ? "unused" : model.selectedID)
+            // Revalidate the device and session state when clicked: a menu can
+            // remain open while devices disconnect or SPP starts automatically.
+            try routes.selectOutput(uid: uid, excludingDJI: model.active)
+        } catch {
+            let alert = NSAlert(); alert.messageText = "无法切换输出设备"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "好"); alert.runModal()
+        }
+    }
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        guard let event = NSApp.currentEvent else { return }
+        let menu = NSMenu()
+        func add(_ title: String, _ action: Selector, key: String = "", modifiers: NSEvent.ModifierFlags = [.command], target: AnyObject? = nil) {
+            let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            entry.keyEquivalentModifierMask = modifiers
+            entry.target = target ?? self
+            menu.addItem(entry)
+        }
+        add("打开主窗口", #selector(showWindow), key: "0")
+        menu.addItem(outputDeviceMenu())
+        menu.addItem(.separator())
+        add("设置…", #selector(showSettings), key: ",")
+        menu.addItem(.separator())
+        add("退出 MicBridge", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
+        NSMenu.popUpContextMenu(menu, with: event, for: sender)
     }
     @objc private func showHelp() {
         if helpWindow == nil {
@@ -281,6 +315,7 @@ final class BridgeAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         guard !choosingExit else { return .terminateCancel }
+        if model.model == .mini2 { return model.requestTermination(restoreHFP: true) }
         // No connected SPP session means there is no remote mode to change.
         guard model.active, !model.exitPending else {
             return model.requestTermination(restoreHFP: model.exitPending)
